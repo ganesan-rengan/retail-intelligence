@@ -6,10 +6,31 @@ __pycache__/
 
 # Environment secrets
 .env
+.env.*
+!.env.example
 
-# Docker
+# Data (downloaded via scripts/download_data.py, never committed)
+data/raw/
+data/processed/
+*.csv
+*.xlsx
+
+# Model artifacts
+*.pkl
+*.joblib
+
+# Docker / logs
 *.log
 
 # OS/editor junk
 .DS_Store
-.vscode/
+# Data
+data/raw/
+data/processed/
+*.xlsx
+*.csv
+
+# Python
+.venv/
+__pycache__/
+*.pyc

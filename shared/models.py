@@ -7,6 +7,7 @@ so this module is the single source of truth for the schema.
 from datetime import datetime
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -60,6 +61,13 @@ class Order(Base):
     items: Mapped[list["OrderItem"]] = relationship(back_populates="order")
     returns: Mapped[list["Return"]] = relationship(back_populates="order")
 
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('delivered', 'shipped', 'pending', 'cancelled')",
+            name="ck_orders_status_valid",
+        ),
+    )
+
 
 class OrderItem(Base):
     __tablename__ = "order_items"
@@ -79,6 +87,8 @@ class OrderItem(Base):
 
     __table_args__ = (
         Index("ix_order_items_product_date", "product_id", "order_id"),
+        CheckConstraint("price > 0", name="ck_order_items_price_positive"),
+        CheckConstraint("quantity > 0", name="ck_order_items_quantity_positive"),
     )
 
 
@@ -100,6 +110,10 @@ class Return(Base):
 
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_returns_idempotency_key"),
+        CheckConstraint(
+            "status IN ('requested', 'completed', 'approved', 'rejected')",
+            name="ck_returns_status_valid",
+        ),
     )
 
 

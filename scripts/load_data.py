@@ -102,8 +102,11 @@ def load_and_clean(csv_path: Path) -> pd.DataFrame:
     df["customer_id"] = df["Customer ID"].fillna(0).astype(int)
     df["is_cancellation"] = df["Invoice"].str.startswith("C")
 
+    # Price must be >= 0.005, not just > 0: order_items.price is Numeric(10,2),
+    # so anything below half a cent (e.g. 0.001) would round to 0.00 on insert
+    # and pass this filter while failing verify_data.py's "price > 0" check.
     valid = (
-        (df["Price"] > 0)
+        (df["Price"] >= 0.005)
         & df["Description"].notna()
         & (df["is_cancellation"] | (df["Quantity"] > 0))
     )

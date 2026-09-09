@@ -27,14 +27,59 @@ RETURN_REASONS = [
 ]
 
 # First keyword match wins; default category is "Other".
+# Ordered so more specific categories are checked before broader ones
+# (Party before Stationery, Frames before Storage, Bags before Toys).
 CATEGORY_KEYWORDS: dict[str, list[str]] = {
     "Christmas": ["CHRISTMAS", "XMAS", "ADVENT", "SANTA", "REINDEER"],
-    "Bags": ["BAG", "LUNCH BOX", "SHOPPER"],
+    "Party": [
+        "TISSUE",
+        "NAPKIN",
+        "PAPER CUP",
+        "PAPER PLATE",
+        "PARTY",
+        "BALLOON",
+        "PAPER CHAIN",
+        "DOILY",
+        "STRAW",
+        "CRAYON",
+        "PAPER CRAFT",
+    ],
+    "Signs": ["SIGN", "PLAQUE", "DOORMAT", "HOOK", "WALL ART"],
+    "Frames": ["FRAME", "PHOTO", "PICTURE", "MIRROR", "RECORD COVER"],
+    "Bags": ["BAG", "LUNCH BOX", "SHOPPER", "PURSE", "WALLET", "CASE", "POUCH"],
     "Kitchen": ["MUG", "CAKE", "BOWL", "PLATE", "TEA", "JAR", "BAKING", "CUTLERY", "TRAY"],
-    "Decorative": ["HEART", "HANGING", "ORNAMENT", "DECORATION", "LANTERN", "GARLAND"],
+    "Decorative": [
+        "HEART",
+        "HANGING",
+        "ORNAMENT",
+        "DECORATION",
+        "LANTERN",
+        "GARLAND",
+        "FAN",
+        "LEIS",
+        "RIBBON",
+        "CHARM",
+        "LIGHTS",
+        "FLOWER",
+        "WREATH",
+    ],
     "Candles": ["CANDLE", "T-LIGHT", "TEALIGHT", "HOLDER"],
     "Stationery": ["CARD", "NOTEBOOK", "PENCIL", "PEN", "WRAP", "GIFT TAG"],
-    "Toys": ["TOY", "GAME", "PUZZLE", "DOLL", "BUNTING", "PLAYHOUSE"],
+    "Toys": [
+        "TOY",
+        "GAME",
+        "PUZZLE",
+        "DOLL",
+        "BUNTING",
+        "PLAYHOUSE",
+        "GLIDER",
+        "PAINT SET",
+        "PATCHES",
+        "BUBBLE GUM",
+        "NIGHT LIGHT",
+        "SKIPPING",
+        "SPACEBOY",
+    ],
     "Storage": ["BOX", "TIN", "BASKET", "DRAWER", "RACK", "HOLDER"],
 }
 
@@ -129,13 +174,17 @@ def build_order_items(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_returns(df: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
-    """One row per cancelled invoice, with a seeded reason."""
+    """One row per cancelled invoice, with a seeded reason and status."""
     cancelled_invoices = df.loc[df["is_cancellation"], "Invoice"].unique()
     reasons = rng.choice(RETURN_REASONS, size=len(cancelled_invoices))
+    statuses = rng.choice(
+        ["completed", "approved", "rejected"],
+        size=len(cancelled_invoices),
+        p=[0.80, 0.15, 0.05],
+    )
 
-    returns = pd.DataFrame({"order_id": cancelled_invoices, "reason": reasons})
+    returns = pd.DataFrame({"order_id": cancelled_invoices, "reason": reasons, "status": statuses})
     returns.insert(0, "return_id", range(1, len(returns) + 1))
-    returns["status"] = "completed"
     returns["idempotency_key"] = None
     return returns
 

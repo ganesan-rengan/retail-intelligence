@@ -1,7 +1,7 @@
 [project]
 name = "retail-intelligence"
 version = "0.1.0"
-description = "Add your description here"
+description = "Demand forecasting service and AI support agent over a shared retail database"
 readme = "README.md"
 authors = [
     { name = "Ganesan Renganathan", email = "rganesan.dev@gmail.com" }
@@ -16,9 +16,5 @@ dependencies = [
     "sqlalchemy>=2.0.52",
 ]
 
-[project.scripts]
-retail-intelligence = "retail_intelligence:main"
-
-[build-system]
-requires = ["uv_build>=0.12.10,<0.13.0"]
-build-backend = "uv_build"
+[tool.uv]
+package = false

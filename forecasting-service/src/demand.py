@@ -6,8 +6,10 @@ import pandas as pd
 from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from shared.database import engine
+from split import SPLIT_DATE
 
 TOP_N_PRODUCTS = 50
 
@@ -17,16 +19,30 @@ TOP_N_PRODUCTS = 50
 # sit near 30-40% but have 500+ line items each, so they are kept.
 MAX_SINGLE_LINE_SHARE = 0.50
 
+# Exclude products with too little presence in the training period to learn
+# a pattern from (e.g. a product that only starts selling near/after the
+# train/test boundary). Selection itself must also only look at training
+# orders -- otherwise "top 50" is picked using future information.
+MIN_WEEKS_ACTIVE_SHARE = 0.25
+
+TRAIN_WEEKS_SQL = text("""
+    SELECT COUNT(DISTINCT DATE_TRUNC('week', order_date)) AS train_weeks
+    FROM orders
+    WHERE status != 'cancelled' AND order_date < :split_date
+""")
+
 TOP_PRODUCTS_SQL = text("""
     WITH product_stats AS (
         SELECT
             oi.product_id,
             SUM(oi.quantity) AS total_units,
             MAX(oi.quantity) AS max_line,
-            COUNT(*) AS line_items
+            COUNT(*) AS line_items,
+            COUNT(DISTINCT DATE_TRUNC('week', o.order_date)) AS weeks_active
         FROM order_items oi
         JOIN orders o ON o.order_id = oi.order_id
         WHERE o.status != 'cancelled'
+          AND o.order_date < :split_date
         GROUP BY oi.product_id
     )
     SELECT
@@ -34,6 +50,7 @@ TOP_PRODUCTS_SQL = text("""
         total_units,
         max_line,
         line_items,
+        weeks_active,
         max_line::numeric / total_units AS single_line_share
     FROM product_stats
     ORDER BY total_units DESC
@@ -55,26 +72,35 @@ WEEKLY_SALES_SQL = text("""
 
 
 def get_top_products(n: int = TOP_N_PRODUCTS) -> list[str]:
-    """Return the n highest-volume product ids, excluding single-transaction outliers."""
+    """Return the n highest-volume product ids, ranked on training-period
+    orders only, excluding single-line outliers and thin-history products."""
     with engine.connect() as conn:
+        train_weeks = conn.execute(
+            TRAIN_WEEKS_SQL, {"split_date": SPLIT_DATE}
+        ).scalar()
         rows = conn.execute(
-            TOP_PRODUCTS_SQL, {"candidate_n": n + 20}
+            TOP_PRODUCTS_SQL, {"candidate_n": n + 20, "split_date": SPLIT_DATE}
         ).fetchall()
+
+    min_weeks_active = MIN_WEEKS_ACTIVE_SHARE * train_weeks
 
     kept, excluded = [], []
     for row in rows:
         if row.single_line_share > MAX_SINGLE_LINE_SHARE:
-            excluded.append(row)
+            excluded.append((row, "single line item share"))
+        elif row.weeks_active < min_weeks_active:
+            excluded.append((row, "thin training-period presence"))
         else:
             kept.append(row)
 
     if excluded:
         print(f"Excluded {len(excluded)} product(s) "
-              f"(single line item > {MAX_SINGLE_LINE_SHARE:.0%} of total units):")
-        for row in excluded:
-            print(f"  {row.product_id:<10} {row.total_units:>8,} units "
-                  f"across {row.line_items:>5,} line items, "
-                  f"largest {row.max_line:,} ({row.single_line_share:.1%})")
+              f"(candidates ranked on {train_weeks} training weeks only):")
+        for row, reason in excluded:
+            print(f"  {row.product_id:<10} {reason:<28} "
+                  f"{row.total_units:>8,} train units, "
+                  f"active {row.weeks_active:>3}/{train_weeks} weeks, "
+                  f"single-line {row.single_line_share:.1%}")
         print()
 
     return [row.product_id for row in kept[:n]]
@@ -110,8 +136,21 @@ def build_weekly_demand(product_ids: list[str]) -> pd.DataFrame:
 
 
 def main() -> None:
+    out = Path(__file__).resolve().parents[2] / "data" / "processed" / "weekly_demand.csv"
+
+    old_products: set[str] = set()
+    if out.exists():
+        old_products = set(pd.read_csv(out, usecols=["product_id"])["product_id"].astype(str).unique())
+
     products = get_top_products()
     print(f"Top {len(products)} products selected")
+
+    new_products = set(products)
+    entered, left = new_products - old_products, old_products - new_products
+    if old_products:
+        print(f"Entered top-50 ({len(entered)}): {sorted(entered)}")
+        print(f"Left top-50    ({len(left)}): {sorted(left)}")
+        print()
 
     df = build_weekly_demand(products)
 
@@ -124,7 +163,6 @@ def main() -> None:
     print()
     print(df.head(10))
 
-    out = Path(__file__).resolve().parents[2] / "data" / "processed" / "weekly_demand.csv"
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out, index=False)
     print(f"\nSaved to {out}")

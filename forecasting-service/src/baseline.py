@@ -50,7 +50,7 @@ def main() -> None:
 
     results = []
     for label, column in [
-        ("naive (last week)", "pred_naive"),
+        ("naive (4 weeks ago)", "pred_naive"),
         ("seasonal naive (same week last year)", "pred_seasonal"),
         ("4-week moving average", "pred_ma4"),
     ]:

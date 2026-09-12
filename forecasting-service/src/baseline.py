@@ -32,6 +32,7 @@ def add_baselines(df: pd.DataFrame) -> pd.DataFrame:
 
     df["pred_naive"] = grouped.shift(1)
     df["pred_seasonal"] = grouped.shift(SEASONAL_LAG_WEEKS)
+    df["pred_ma4"] = grouped.transform(lambda s: s.shift(1).rolling(4).mean())
 
     return df
 
@@ -40,7 +41,7 @@ def main() -> None:
     df = add_baselines(load_demand())
     _, test = split_by_date(df)
 
-    missing = test[["pred_naive", "pred_seasonal"]].isna().sum()
+    missing = test[["pred_naive", "pred_seasonal", "pred_ma4"]].isna().sum()
     if missing.any():
         raise ValueError(f"Test set has missing predictions:\n{missing}")
 
@@ -48,6 +49,7 @@ def main() -> None:
     for label, column in [
         ("naive (last week)", "pred_naive"),
         ("seasonal naive (same week last year)", "pred_seasonal"),
+        ("4-week moving average", "pred_ma4"),
     ]:
         scores = evaluate(test["units_sold"], test[column])
         results.append({"baseline": label, **scores})

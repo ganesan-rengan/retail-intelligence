@@ -90,18 +90,20 @@ def main() -> None:
 
     print(f"Feature count: {len(feature_cols)}")
 
-    rows_before = len(df)
-    clean = df.dropna(subset=feature_cols)
-    rows_after = len(clean)
-    print(f"Rows before dropna: {rows_before:,}")
-    print(f"Rows after dropna : {rows_after:,} "
-          f"({100 * rows_after / rows_before:.1f}%)")
-
-    # Split before dropping NaN, same order as baseline.py, so a product with
-    # no learnable history can't silently disappear from train via dropna.
+    # The pipeline never drops NaN: LightGBM handles missing values natively,
+    # and on a dataset this small, discarding ~16% of rows to force
+    # complete cases costs more signal than it saves. Split first, same
+    # order as baseline.py, so a product with no learnable history can't
+    # silently disappear from train.
     train, test = split_by_date(df)
-    print(f"Train rows: {len(train):,}")
-    print(f"Test rows : {len(test):,}")
+    train_complete = train.dropna(subset=feature_cols)
+    test_complete = test.dropna(subset=feature_cols)
+
+    print(f"Split (what the model trains on): "
+          f"train {len(train):,} / test {len(test):,}")
+    print(f"Diagnostic - complete-case rows:  "
+          f"train {len(train_complete):,} ({100 * len(train_complete) / len(train):.1f}%) / "
+          f"test {len(test_complete):,} ({100 * len(test_complete) / len(test):.1f}%)")
 
     no_history = train.groupby("product_id")["units_sold"].sum()
     no_history = no_history[no_history == 0]

@@ -1,0 +1,19 @@
+{
+  "generated_date": "2026-09-12",
+  "horizon_weeks": 4,
+  "n_origins": 13,
+  "rolling_origin": {
+    "wape": 1.0108509080270642,
+    "mape": 6.275576402754919,
+    "mae": 331.69050845092056,
+    "bias": 141.983616861488
+  },
+  "rolling_origin_failures": [],
+  "single_fit": {
+    "wape": 2.682059893362646,
+    "mape": 24.936776853737914,
+    "mae": 880.064312809085,
+    "bias": 705.8584113496254
+  },
+  "single_fit_failures": []
+}

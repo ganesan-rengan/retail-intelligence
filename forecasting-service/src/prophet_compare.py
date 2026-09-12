@@ -21,6 +21,7 @@ import io
 import json
 import logging
 import sys
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -168,6 +169,19 @@ def main() -> None:
     print(f"Gap between the two Prophet rows: {gap:+.1f} WAPE pts "
           f"(single-fit minus rolling-origin) -- this is the cost of the "
           f"52-week horizon versus the method itself.")
+
+    prophet_metrics = {
+        "generated_date": date.today().isoformat(),
+        "horizon_weeks": HORIZON_WEEKS,
+        "n_origins": N_ORIGINS,
+        "rolling_origin": rolling_scores,
+        "rolling_origin_failures": rolling["failures"],
+        "single_fit": single_scores,
+        "single_fit_failures": single["failures"],
+    }
+    metrics_out = MODEL_DIR / "prophet_metrics.json"
+    metrics_out.write_text(json.dumps(prophet_metrics, indent=2))
+    print(f"\nSaved Prophet metrics to {metrics_out}")
 
 
 if __name__ == "__main__":

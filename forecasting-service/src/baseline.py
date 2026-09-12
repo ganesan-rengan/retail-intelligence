@@ -15,6 +15,7 @@ from metrics import evaluate
 from split import load_demand, split_by_date
 
 SEASONAL_LAG_WEEKS = 52
+HORIZON_WEEKS = 4
 METRICS_PATH = (
     Path(__file__).resolve().parents[2] / "data" / "processed" / "baseline_metrics.csv"
 )
@@ -30,9 +31,11 @@ def add_baselines(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["product_id", "week_start"]).copy()
     grouped = df.groupby("product_id")["units_sold"]
 
-    df["pred_naive"] = grouped.shift(1)
+    df["pred_naive"] = grouped.shift(HORIZON_WEEKS)
     df["pred_seasonal"] = grouped.shift(SEASONAL_LAG_WEEKS)
-    df["pred_ma4"] = grouped.transform(lambda s: s.shift(1).rolling(4).mean())
+    df["pred_ma4"] = grouped.transform(
+        lambda s: s.shift(HORIZON_WEEKS).rolling(4).mean()
+    )
 
     return df
 
@@ -57,6 +60,7 @@ def main() -> None:
     out = pd.DataFrame(results)
 
     print("BASELINE RESULTS")
+    print(f"Horizon: {HORIZON_WEEKS} weeks ahead")
     print(f"Test period: {test['week_start'].min().date()} -> "
           f"{test['week_start'].max().date()}")
     print(f"Rows: {len(test):,}  Products: {test['product_id'].nunique()}")

@@ -1,0 +1,57 @@
+{
+  "model_version": "v1",
+  "training_date": "2026-09-12",
+  "horizon_weeks": 4,
+  "baselines": {
+    "naive (4 weeks ago)": {
+      "wape": 0.8611209440911084,
+      "mape": 2.1950882914244905,
+      "mae": 282.55961538461537,
+      "bias": 22.04576923076923
+    },
+    "seasonal naive (same week last year)": {
+      "wape": 1.0433153839120985,
+      "mape": 3.989501437548756,
+      "mae": 342.3430769230769,
+      "bias": 117.97538461538461
+    },
+    "4-week moving average": {
+      "wape": 0.7660185104871662,
+      "mape": 3.0875317384107217,
+      "mae": 251.35365384615383,
+      "bias": 28.65173076923077
+    }
+  },
+  "model": {
+    "wape": 0.7031500663471322,
+    "mape": 2.9521891510726515,
+    "mae": 230.72463127048448,
+    "bias": 17.570305930848036
+  },
+  "validation_wape": 0.6281850110810137,
+  "best_iteration_raw": 97,
+  "best_iteration_scaled": 115,
+  "feature_list": [
+    "lag_4",
+    "lag_5",
+    "lag_6",
+    "lag_8",
+    "lag_12",
+    "roll_mean_4",
+    "roll_std_4",
+    "roll_max_4",
+    "roll_mean_8",
+    "roll_std_8",
+    "roll_max_8",
+    "roll_mean_12",
+    "roll_std_12",
+    "roll_max_12",
+    "weeks_since_last_sale",
+    "nonzero_rate_8",
+    "spike_ratio",
+    "week_of_year",
+    "month",
+    "is_peak_season",
+    "product_id"
+  ]
+}

@@ -11,14 +11,33 @@ from shared.database import engine
 
 TOP_N_PRODUCTS = 50
 
+# Exclude products with no learnable demand pattern: where a single line item
+# dominates total volume. Products 23843 (100%), 23166 (95%) and 37410 (75%)
+# have too few transactions to model. Bulk-wholesale SKUs like 21980-21984
+# sit near 30-40% but have 500+ line items each, so they are kept.
+MAX_SINGLE_LINE_SHARE = 0.50
+
 TOP_PRODUCTS_SQL = text("""
-    SELECT oi.product_id, SUM(oi.quantity) AS total_units
-    FROM order_items oi
-    JOIN orders o ON o.order_id = oi.order_id
-    WHERE o.status != 'cancelled'
-    GROUP BY oi.product_id
+    WITH product_stats AS (
+        SELECT
+            oi.product_id,
+            SUM(oi.quantity) AS total_units,
+            MAX(oi.quantity) AS max_line,
+            COUNT(*) AS line_items
+        FROM order_items oi
+        JOIN orders o ON o.order_id = oi.order_id
+        WHERE o.status != 'cancelled'
+        GROUP BY oi.product_id
+    )
+    SELECT
+        product_id,
+        total_units,
+        max_line,
+        line_items,
+        max_line::numeric / total_units AS single_line_share
+    FROM product_stats
     ORDER BY total_units DESC
-    LIMIT :top_n
+    LIMIT :candidate_n
 """)
 
 WEEKLY_SALES_SQL = text("""
@@ -36,10 +55,29 @@ WEEKLY_SALES_SQL = text("""
 
 
 def get_top_products(n: int = TOP_N_PRODUCTS) -> list[str]:
-    """Return the n highest-volume product ids."""
+    """Return the n highest-volume product ids, excluding single-transaction outliers."""
     with engine.connect() as conn:
-        rows = conn.execute(TOP_PRODUCTS_SQL, {"top_n": n}).fetchall()
-    return [row.product_id for row in rows]
+        rows = conn.execute(
+            TOP_PRODUCTS_SQL, {"candidate_n": n + 20}
+        ).fetchall()
+
+    kept, excluded = [], []
+    for row in rows:
+        if row.single_line_share > MAX_SINGLE_LINE_SHARE:
+            excluded.append(row)
+        else:
+            kept.append(row)
+
+    if excluded:
+        print(f"Excluded {len(excluded)} product(s) "
+              f"(single line item > {MAX_SINGLE_LINE_SHARE:.0%} of total units):")
+        for row in excluded:
+            print(f"  {row.product_id:<10} {row.total_units:>8,} units "
+                  f"across {row.line_items:>5,} line items, "
+                  f"largest {row.max_line:,} ({row.single_line_share:.1%})")
+        print()
+
+    return [row.product_id for row in kept[:n]]
 
 
 def build_weekly_demand(product_ids: list[str]) -> pd.DataFrame:

@@ -1,7 +1,7 @@
 {
-  "model_version": "v3",
-  "trained_at": "2026-09-12T03:19:26.596680+00:00",
-  "model_file": "demand_forecast_v3.txt",
+  "model_version": "v2",
+  "trained_at": "2026-09-12T03:09:10.365460+00:00",
+  "model_file": "demand_forecast_v2.txt",
   "algorithm": "lightgbm",
   "objective": "regression_l1",
   "horizon_weeks": 4,
@@ -53,7 +53,7 @@
   "baseline_comparison": {
     "best_baseline": "4-week moving average",
     "best_baseline_wape": 0.7660185104871662,
-    "improvement_points": 0.06286844414003401,
-    "improvement_relative": 0.08207170359375708
+    "improvement_points": 6.286844414003401,
+    "improvement_relative": 8.20717035937571
   }
 }

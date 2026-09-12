@@ -8,8 +8,9 @@ The final model is refit on the full train set at a scaled round count and
 evaluated on test exactly once.
 """
 import json
+import re
 import sys
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 
 import lightgbm as lgb
@@ -24,7 +25,8 @@ from metrics import evaluate
 from split import SPLIT_DATE, load_demand, split_by_date
 
 MODEL_DIR = Path(__file__).resolve().parents[2] / "models"
-MODEL_VERSION = "v1"
+HISTORY_DIR = MODEL_DIR / "history"
+METRICS_PATH = MODEL_DIR / "metrics.json"
 
 VALID_WEEKS = 8
 MAX_ROUNDS = 1000
@@ -57,6 +59,45 @@ def make_dataset(frame: pd.DataFrame, feature_cols: list[str], reference=None) -
         reference=reference,
         free_raw_data=False,
     )
+
+
+def next_model_version() -> int:
+    """max(tracked versions) + 1. Deliberately ignores models/*.txt -- that's
+    gitignored and may not exist locally even though git history already
+    records a higher version (see ADR 006)."""
+    versions = [0]
+    if METRICS_PATH.exists():
+        try:
+            current = json.loads(METRICS_PATH.read_text())
+            versions.append(int(current["model_version"].lstrip("v")))
+        except (KeyError, ValueError, json.JSONDecodeError):
+            pass
+    if HISTORY_DIR.exists():
+        for path in HISTORY_DIR.glob("metrics_v*.json"):
+            match = re.fullmatch(r"metrics_v(\d+)\.json", path.name)
+            if match:
+                versions.append(int(match.group(1)))
+    return max(versions) + 1
+
+
+def archive_current_metrics() -> None:
+    """Copy the current metrics.json to history under its own recorded
+    version before it gets overwritten. No-op on the first ever run."""
+    if not METRICS_PATH.exists():
+        return
+    current = json.loads(METRICS_PATH.read_text())
+    old_version = int(current["model_version"].lstrip("v"))
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    archive_path = HISTORY_DIR / f"metrics_v{old_version}.json"
+    archive_path.write_text(json.dumps(current, indent=2))
+
+
+def write_metrics_atomic(data: dict) -> None:
+    """Write-to-temp-then-replace so a crash mid-write can't leave the
+    tracked, current metrics.json half-written."""
+    tmp_path = METRICS_PATH.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(data, indent=2))
+    tmp_path.replace(METRICS_PATH)
 
 
 def main() -> None:
@@ -106,22 +147,28 @@ def main() -> None:
 
     print(f"Best iteration ({fit_weeks} weeks)    : {best_iteration}")
     print(f"Scaled iteration ({train_weeks} weeks)  : {scaled_iteration}")
+    yoy_decline = float(test["units_sold"].sum() / train["units_sold"].sum() - 1)
+
     print(f"Validation WAPE ({VALID_WEEKS} weeks)    : {valid_wape:.1%}")
     print(f"Test WAPE                     : {model_scores['wape']:.1%}")
     if valid_wape < model_scores["wape"]:
         gap = model_scores["wape"] - valid_wape
-        print(f"  Validation beats test by {gap:.1%} pts -- possible overfitting "
-              f"to the 2010 period given the year-over-year demand decline.")
+        print(f"  Validation beats test by {gap:.1%} pts -- distribution drift "
+              f"(demand fell {abs(yoy_decline):.1%} from train to test), not overfitting.")
     print()
 
-    results = []
-    for label, column in BASELINE_COLUMNS:
-        results.append({"baseline": label, **evaluate(test["units_sold"], test[column])})
+    baseline_scores = {
+        label: evaluate(test["units_sold"], test[column]) for label, column in BASELINE_COLUMNS
+    }
+    results = [{"baseline": label, **scores} for label, scores in baseline_scores.items()]
     results.append({"baseline": "LightGBM", **model_scores})
 
-    ma4_wape = next(r["wape"] for r in results if r["baseline"] == "4-week moving average")
-    improvement_pts = 100 * (ma4_wape - model_scores["wape"])
-    improvement_rel = 100 * (ma4_wape - model_scores["wape"]) / ma4_wape
+    best_baseline_label, best_baseline_result = min(baseline_scores.items(), key=lambda kv: kv[1]["wape"])
+    best_baseline_wape = best_baseline_result["wape"]
+    # Fractions, matching wape/mape/bias elsewhere -- format as percentages
+    # only at print/render time, never store the *100'd value.
+    improvement_points = best_baseline_wape - model_scores["wape"]
+    improvement_relative = (best_baseline_wape - model_scores["wape"]) / best_baseline_wape
 
     print("RESULTS")
     print(f"Horizon: {HORIZON_WEEKS} weeks ahead")
@@ -132,8 +179,8 @@ def main() -> None:
               f"{row['wape']:>7.1%} {row['mape']:>7.1%} "
               f"{row['mae']:>8.1f} {row['bias']:>+8.1f}")
     print()
-    print(f"Improvement over 4-week moving average: "
-          f"{improvement_pts:+.1f} pts ({improvement_rel:+.1f}% relative)")
+    print(f"Improvement over {best_baseline_label}: "
+          f"{improvement_points * 100:+.1f} pts ({improvement_relative * 100:+.1f}% relative)")
 
     print()
     print("TOP 10 FEATURES BY GAIN")
@@ -143,29 +190,53 @@ def main() -> None:
     ).sort_values(ascending=False)
     print(importances.head(10).round(1).to_string())
 
+    version = next_model_version()
+    model_version = f"v{version}"
+    model_filename = f"demand_forecast_{model_version}.txt"
+
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    training_date = date.today().isoformat()
-    model_path = MODEL_DIR / f"demand_forecast_{MODEL_VERSION}.txt"
+    model_path = MODEL_DIR / model_filename
     final_booster.save_model(str(model_path))
 
-    metrics = {
-        "model_version": MODEL_VERSION,
-        "training_date": training_date,
+    metrics_out = {
+        "model_version": model_version,
+        "trained_at": datetime.now(timezone.utc).isoformat(),
+        "model_file": model_filename,
+        "algorithm": "lightgbm",
+        "objective": PARAMS["objective"],
         "horizon_weeks": HORIZON_WEEKS,
-        "baselines": {
-            label: evaluate(test["units_sold"], test[column])
-            for label, column in BASELINE_COLUMNS
+        "n_products": int(train["product_id"].nunique()),
+        "n_train_rows": int(len(train)),
+        "train_period": {
+            "start": train["week_start"].min().date().isoformat(),
+            "end": train["week_start"].max().date().isoformat(),
         },
-        "model": model_scores,
-        "validation_wape": valid_wape,
-        "best_iteration_raw": best_iteration,
-        "best_iteration_scaled": scaled_iteration,
-        "feature_list": feature_cols,
+        "test_period": {
+            "start": test["week_start"].min().date().isoformat(),
+            "end": test["week_start"].max().date().isoformat(),
+        },
+        "yoy_decline": yoy_decline,
+        "features": feature_cols,
+        "best_iteration": {"raw": best_iteration, "scaled": scaled_iteration},
+        "metrics": {
+            "validation_wape": valid_wape,
+            "test_wape": model_scores["wape"],
+            "test_mape": model_scores["mape"],
+            "test_mae": model_scores["mae"],
+            "test_bias": model_scores["bias"],
+        },
+        "baseline_comparison": {
+            "best_baseline": best_baseline_label,
+            "best_baseline_wape": best_baseline_wape,
+            "improvement_points": improvement_points,
+            "improvement_relative": improvement_relative,
+        },
     }
-    metrics_path = MODEL_DIR / "metrics.json"
-    metrics_path.write_text(json.dumps(metrics, indent=2))
+
+    archive_current_metrics()
+    write_metrics_atomic(metrics_out)
     print(f"\nSaved model to {model_path}")
-    print(f"Saved metrics to {metrics_path}")
+    print(f"Saved metrics to {METRICS_PATH} (model_version {model_version})")
 
 
 if __name__ == "__main__":

@@ -16,12 +16,10 @@ else), not a competing method, so it would mislead a reader skimming a
 WAPE-sorted table straight to the top. It's reported separately as a note
 below the table instead.
 
-NOTE (not fixed here, flagged for a separate change): train.py currently
-also writes baseline scores into models/metrics.json under "baselines".
-That's a second copy of the same numbers this script deliberately ignores
-in favor of baseline_metrics.csv -- worth removing from train.py later so
-there is exactly one source of truth, but that's a train.py change, out of
-scope for this script.
+models/metrics.json no longer duplicates baseline scores (see ADR 006's
+sibling change in train.py) -- baseline_metrics.csv is the only source for
+those, and metrics.json carries just the derived "baseline_comparison"
+summary against whichever baseline is empirically best.
 """
 import json
 import sys
@@ -79,13 +77,13 @@ def build_rows(baselines: pd.DataFrame, model_metrics: dict, prophet_metrics: di
             "is_model": False,
         })
 
-    model_scores = model_metrics["model"]
+    model_scores = model_metrics["metrics"]
     rows.append({
         "label": "LightGBM",
-        "wape": model_scores["wape"],
-        "mape": model_scores["mape"],
-        "mae": model_scores["mae"],
-        "bias": model_scores["bias"],
+        "wape": model_scores["test_wape"],
+        "mape": model_scores["test_mape"],
+        "mae": model_scores["test_mae"],
+        "bias": model_scores["test_bias"],
         "is_model": True,
     })
 
@@ -132,16 +130,16 @@ def main() -> None:
     n_products = test["product_id"].nunique()
     horizon_weeks = model_metrics["horizon_weeks"]
 
-    ma4_wape = float(baselines.loc["4-week moving average", "wape"])
-    model_wape = model_metrics["model"]["wape"]
-    improvement_pts = 100 * (ma4_wape - model_wape)
-    improvement_rel = 100 * (ma4_wape - model_wape) / ma4_wape
+    model_wape = model_metrics["metrics"]["test_wape"]
+    best_baseline_label = model_metrics["baseline_comparison"]["best_baseline"]
+    improvement_pts = model_metrics["baseline_comparison"]["improvement_points"]
+    improvement_rel = model_metrics["baseline_comparison"]["improvement_relative"]
 
     # Train-vs-test aggregate volume, computed fresh -- this is the same
     # "year-over-year" comparison used elsewhere, not a hardcoded figure.
     yoy_decline = 100 * (test["units_sold"].sum() / train["units_sold"].sum() - 1)
 
-    validation_wape = model_metrics["validation_wape"]
+    validation_wape = model_metrics["metrics"]["validation_wape"]
     valid_test_gap = 100 * (model_wape - validation_wape)
     drift_note = (
         f"Validation WAPE ({validation_wape:.1%}, on {VALID_WEEKS} held-out weeks "
@@ -187,8 +185,8 @@ def main() -> None:
         "",
         prophet_control_note,
         "",
-        f"**Improvement over 4-week moving average:** {improvement_pts:+.1f} WAPE points "
-        f"({improvement_rel:+.1f}% relative).",
+        f"**Improvement over {best_baseline_label}:** {improvement_pts * 100:+.1f} WAPE points "
+        f"({improvement_rel * 100:+.1f}% relative).",
         "",
         f"**Validation vs. test:** {drift_note}",
         "",

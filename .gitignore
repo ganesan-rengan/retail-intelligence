@@ -18,6 +18,8 @@ data/processed/
 # Model artifacts
 *.pkl
 *.joblib
+models/*.txt
+models/*.pkl
 
 # Docker / logs
 *.log

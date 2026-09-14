@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from artifact import load_metrics, load_model  # noqa: E402
 
 from forecasting_service.app.config import settings
+from forecasting_service.app.schemas import HealthResponse
 from shared.database import engine
 
 logging.basicConfig(level=settings.log_level)
@@ -57,20 +58,20 @@ def database_ok() -> bool:
         return False
 
 
-@app.get("/health")
+@app.get("/health", response_model=HealthResponse, responses={503: {"model": HealthResponse}})
 def health() -> JSONResponse:
     """Readiness check. Returns 503 if the model or database is unavailable."""
     model_loaded = "model" in state
     db_ok = database_ok()
     healthy = model_loaded and db_ok
 
-    body = {
-        "status": "healthy" if healthy else "unhealthy",
-        "model_loaded": model_loaded,
-        "database": "up" if db_ok else "down",
-        "model_version": state.get("metrics", {}).get("model_version"),
-    }
-    return JSONResponse(content=body, status_code=200 if healthy else 503)
+    body = HealthResponse(
+        status="healthy" if healthy else "unhealthy",
+        model_loaded=model_loaded,
+        database="up" if db_ok else "down",
+        model_version=state.get("metrics", {}).get("model_version"),
+    )
+    return JSONResponse(content=body.model_dump(mode="json"), status_code=200 if healthy else 503)
 @app.get("/")
 def root() -> dict:
     """Signpost for anyone who lands on the base URL."""

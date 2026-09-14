@@ -16,9 +16,9 @@ data/processed/
 *.xlsx
 
 # Model artifacts
+# models/*.txt (the LightGBM artifact) is tracked deliberately -- see ADR-006.
 *.pkl
 *.joblib
-models/*.txt
 models/*.pkl
 
 # Docker / logs

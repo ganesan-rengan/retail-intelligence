@@ -17,5 +17,32 @@ services:
       timeout: 5s
       retries: 5
 
+  forecasting-service:
+    build:
+      context: .
+      dockerfile: forecasting_service/Dockerfile
+    container_name: retail-forecasting-service
+    restart: unless-stopped
+    environment:
+      # postgres, not localhost: this container reaches Postgres over the
+      # compose network by service name, never by the host's localhost.
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # /health already reports 503 when the model or the database isn't
+      # ready, so reuse it here rather than a separate liveness check --
+      # without this, a container that boots but can't reach Postgres would
+      # show "Up" while every request fails, the exact gap the postgres
+      # healthcheck above already closes for that service.
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
 volumes:
   postgres_data:

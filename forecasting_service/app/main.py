@@ -5,20 +5,31 @@ Serves weekly demand forecasts for the top 50 products at a fixed 4-week horizon
 
 import logging
 import sys
+from collections.abc import Iterator
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from artifact import load_metrics, load_model  # noqa: E402
 
+from forecasting_service.app import service
 from forecasting_service.app.config import settings
-from forecasting_service.app.schemas import HealthResponse
-from shared.database import engine
+from forecasting_service.app.schemas import (
+    ErrorResponse,
+    ForecastRequest,
+    ForecastResponse,
+    HealthResponse,
+    ModelInfoResponse,
+    ProductsResponse,
+)
+from shared.database import engine, get_session
 
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
@@ -34,9 +45,32 @@ async def lifespan(app: FastAPI):
     state["model"] = load_model()
     state["metrics"] = load_metrics()
     logger.info("Loaded model version %s", state["metrics"]["model_version"])
+
+    db = get_session()
+    try:
+        latest_week = service.resolve_latest_week(db)
+        target_week = service.resolve_target_week(latest_week)
+        logger.info(
+            "Forecasting target week %s - %s (latest complete week in DB: %s)",
+            target_week.isoformat(),
+            (target_week + timedelta(days=6)).isoformat(),
+            latest_week.isoformat(),
+        )
+    finally:
+        db.close()
+
     yield
     state.clear()
     logger.info("Shutdown complete")
+
+
+def get_db() -> Iterator[Session]:
+    """A fresh DB session per request, closed when the request finishes."""
+    db = get_session()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 app = FastAPI(
@@ -72,6 +106,30 @@ def health() -> JSONResponse:
         model_version=state.get("metrics", {}).get("model_version"),
     )
     return JSONResponse(content=body.model_dump(mode="json"), status_code=200 if healthy else 503)
+
+
+@app.post("/forecast", response_model=ForecastResponse, responses={404: {"model": ErrorResponse}})
+def forecast(request: ForecastRequest, db: Session = Depends(get_db)) -> ForecastResponse:
+    """Predict units for a trained product, horizon_days past the latest complete week in the DB."""
+    try:
+        return service.build_forecast(db, state["model"], state["metrics"], request.product_id)
+    except service.UnknownProductError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/model-info", response_model=ModelInfoResponse)
+def model_info() -> ModelInfoResponse:
+    """Metadata about the currently loaded model, sourced from metrics.json."""
+    return service.build_model_info(state["metrics"])
+
+
+@app.get("/products", response_model=ProductsResponse)
+def products() -> ProductsResponse:
+    """The set of products the currently loaded model was trained to forecast."""
+    trained = service.get_trained_products(state["model"])
+    return ProductsResponse(products=trained, count=len(trained))
+
+
 @app.get("/")
 def root() -> dict:
     """Signpost for anyone who lands on the base URL."""

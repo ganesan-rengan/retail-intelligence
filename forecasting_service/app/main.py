@@ -29,7 +29,7 @@ from forecasting_service.app.schemas import (
     ModelInfoResponse,
     ProductsResponse,
 )
-from shared.database import engine, get_session
+from shared.database import get_session
 
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
@@ -81,11 +81,10 @@ app = FastAPI(
 )
 
 
-def database_ok() -> bool:
+def database_ok(db: Session) -> bool:
     """Return True if the database answers a trivial query."""
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        db.execute(text("SELECT 1"))
         return True
     except Exception as exc:
         logger.warning("Database health check failed: %s", exc)
@@ -93,10 +92,10 @@ def database_ok() -> bool:
 
 
 @app.get("/health", response_model=HealthResponse, responses={503: {"model": HealthResponse}})
-def health() -> JSONResponse:
+def health(db: Session = Depends(get_db)) -> JSONResponse:
     """Readiness check. Returns 503 if the model or database is unavailable."""
     model_loaded = "model" in state
-    db_ok = database_ok()
+    db_ok = database_ok(db)
     healthy = model_loaded and db_ok
 
     body = HealthResponse(

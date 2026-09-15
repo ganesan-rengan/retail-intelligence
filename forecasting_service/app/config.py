@@ -1,5 +1,6 @@
 """Service configuration, read from environment variables."""
 
+from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,4 +22,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
 
-settings = Settings()
+@lru_cache
+def get_settings() -> Settings:
+    """Built on first use, not at import time -- so importing this module
+    never requires DATABASE_URL unless something actually reads a setting.
+    Cached so every caller shares the same instance after that."""
+    return Settings()

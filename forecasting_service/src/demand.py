@@ -8,7 +8,7 @@ from sqlalchemy import text
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from shared.database import engine
+from shared.database import get_engine
 from split import SPLIT_DATE
 
 TOP_N_PRODUCTS = 50
@@ -74,7 +74,7 @@ WEEKLY_SALES_SQL = text("""
 def get_top_products(n: int = TOP_N_PRODUCTS) -> list[str]:
     """Return the n highest-volume product ids, ranked on training-period
     orders only, excluding single-line outliers and thin-history products."""
-    with engine.connect() as conn:
+    with get_engine().connect() as conn:
         train_weeks = conn.execute(
             TRAIN_WEEKS_SQL, {"split_date": SPLIT_DATE}
         ).scalar()
@@ -108,7 +108,7 @@ def get_top_products(n: int = TOP_N_PRODUCTS) -> list[str]:
 
 def build_weekly_demand(product_ids: list[str]) -> pd.DataFrame:
     """Return one row per product per week, zero-filled, edges trimmed."""
-    with engine.connect() as conn:
+    with get_engine().connect() as conn:
         df = pd.read_sql(WEEKLY_SALES_SQL, conn, params={"product_ids": product_ids})
 
     df["week_start"] = pd.to_datetime(df["week_start"])

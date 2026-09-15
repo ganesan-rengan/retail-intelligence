@@ -76,8 +76,11 @@ class TestForecast:
     def test_returns_404_for_an_untrained_product(self, api_client, fake_model, sample_metrics):
         main.state["model"] = fake_model
         main.state["metrics"] = sample_metrics
-        # No DB override needed: build_forecast checks the trained-product
-        # list before ever touching the database.
+        # build_forecast checks the trained-product list before ever touching
+        # the database -- but get_db is still overridden below, because
+        # FastAPI resolves every route dependency on every request whether
+        # or not the handler body ends up using it.
+        main.app.dependency_overrides[main.get_db] = lambda: MagicMock()
 
         resp = api_client.post("/forecast", json={"product_id": "NOT-A-REAL-PRODUCT"})
 
@@ -87,6 +90,7 @@ class TestForecast:
     def test_returns_422_for_an_unsupported_horizon(self, api_client, fake_model, sample_metrics):
         main.state["model"] = fake_model
         main.state["metrics"] = sample_metrics
+        main.app.dependency_overrides[main.get_db] = lambda: MagicMock()
 
         resp = api_client.post(
             "/forecast", json={"product_id": TRAINED_PRODUCTS[0], "horizon_days": 7}
@@ -97,6 +101,7 @@ class TestForecast:
     def test_returns_422_when_product_id_is_missing(self, api_client, fake_model, sample_metrics):
         main.state["model"] = fake_model
         main.state["metrics"] = sample_metrics
+        main.app.dependency_overrides[main.get_db] = lambda: MagicMock()
 
         resp = api_client.post("/forecast", json={})
 

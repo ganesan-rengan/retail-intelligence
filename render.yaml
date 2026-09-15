@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: retail-forecasting-service
+    runtime: docker
+    dockerfilePath: ./forecasting_service/Dockerfile
+    dockerContext: .
+    plan: free
+    region: singapore
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO

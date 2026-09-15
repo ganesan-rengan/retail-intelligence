@@ -1,22 +1,38 @@
 """Transform the UCI Online Retail II CSV into the six-table schema and
-bulk-load it into Postgres.
+bulk-load it into Postgres, local or remote.
 
-Idempotent: truncates the target tables first, so it can be re-run freely.
+Resumable, not just idempotent: each table loads in its own transaction and
+is skipped if it already holds exactly the expected row count. A table with
+a nonzero but wrong count is refused rather than guessed at -- that shape
+only happens when an earlier run died mid-COPY, and silently overwriting or
+skipping it would hide a partial load. Pass --truncate for a clean full
+reload instead of resolving that by hand.
 """
 
+import argparse
 import io
-import sys
+import os
+import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import psycopg2
+from dotenv import load_dotenv
 from faker import Faker
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from shared.database import engine
-
 CSV_PATH = Path(__file__).resolve().parent.parent / "data" / "raw" / "online_retail_ii.csv"
+
+TABLES = ["customers", "products", "orders", "order_items", "returns"]
+TRUNCATE_TABLES = [*TABLES, "agent_actions"]
+
+COLUMNS = {
+    "customers": ["customer_id", "name", "email", "country"],
+    "products": ["product_id", "name", "category", "unit_price"],
+    "orders": ["order_id", "customer_id", "order_date", "status"],
+    "order_items": ["order_item_id", "order_id", "product_id", "quantity", "price"],
+    "returns": ["return_id", "order_id", "reason", "status", "idempotency_key"],
+}
 
 RETURN_REASONS = [
     "damaged in transit",
@@ -205,44 +221,77 @@ def copy_dataframe(conn, df: pd.DataFrame, table: str, columns: list[str]) -> No
         )
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--database-url",
+        default=None,
+        help="Postgres DSN to load into. Falls back to the DATABASE_URL env var.",
+    )
+    parser.add_argument(
+        "--truncate",
+        action="store_true",
+        help="Truncate all tables before loading, for a clean full reload.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
+
+    load_dotenv()
+    database_url = args.database_url or os.environ.get("DATABASE_URL")
+    if not database_url:
+        raise SystemExit("No database URL: pass --database-url or set DATABASE_URL.")
+
     print(f"Reading {CSV_PATH} ...")
     df = load_and_clean(CSV_PATH)
     print(f"Cleaned rows: {len(df):,}")
 
     rng = np.random.default_rng(42)
 
-    customers = build_customers(df)
-    products = build_products(df)
-    orders = build_orders(df, rng)
-    order_items = build_order_items(df)
-    returns = build_returns(df, rng)
+    dataframes = {
+        "customers": build_customers(df),
+        "products": build_products(df),
+        "orders": build_orders(df, rng),
+        "order_items": build_order_items(df),
+        "returns": build_returns(df, rng),
+    }
 
-    conn = engine.raw_connection()
+    conn = psycopg2.connect(database_url)
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "TRUNCATE customers, products, orders, order_items, returns, agent_actions "
-                "RESTART IDENTITY CASCADE"
-            )
+        if args.truncate:
+            with conn.cursor() as cur:
+                cur.execute(f"TRUNCATE {', '.join(TRUNCATE_TABLES)} RESTART IDENTITY CASCADE")
+            conn.commit()
+            print("Truncated all tables.")
 
-        copy_dataframe(conn, customers, "customers", ["customer_id", "name", "email", "country"])
-        copy_dataframe(conn, products, "products", ["product_id", "name", "category", "unit_price"])
-        copy_dataframe(conn, orders, "orders", ["order_id", "customer_id", "order_date", "status"])
-        copy_dataframe(
-            conn,
-            order_items,
-            "order_items",
-            ["order_item_id", "order_id", "product_id", "quantity", "price"],
-        )
-        copy_dataframe(
-            conn,
-            returns,
-            "returns",
-            ["return_id", "order_id", "reason", "status", "idempotency_key"],
-        )
+        print("\nLoading:")
+        for table in TABLES:
+            table_df = dataframes[table]
+            expected = len(table_df)
 
-        conn.commit()
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT COUNT(*) FROM {table}")
+                actual = cur.fetchone()[0]
+
+            if actual == expected:
+                print(f"  {table}: skipping (already has {actual:,} rows)")
+                continue
+
+            if actual != 0:
+                conn.rollback()
+                raise SystemExit(
+                    f"{table}: has {actual:,} rows but expected {expected:,}. This looks like "
+                    f"a partial load from an earlier run -- not resuming automatically. "
+                    f"Truncate it and rerun: TRUNCATE {table} RESTART IDENTITY CASCADE;"
+                )
+
+            start = time.perf_counter()
+            copy_dataframe(conn, table_df, table, COLUMNS[table])
+            conn.commit()
+            elapsed = time.perf_counter() - start
+            print(f"  {table}: loaded {expected:,} rows in {elapsed:.2f}s")
     except Exception:
         conn.rollback()
         raise
@@ -250,11 +299,8 @@ def main() -> None:
         conn.close()
 
     print("\nRow counts:")
-    print(f"  customers:   {len(customers):,}")
-    print(f"  products:    {len(products):,}")
-    print(f"  orders:      {len(orders):,}")
-    print(f"  order_items: {len(order_items):,}")
-    print(f"  returns:     {len(returns):,}")
+    for table in TABLES:
+        print(f"  {table}: {len(dataframes[table]):,}")
 
 
 if __name__ == "__main__":

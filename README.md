@@ -1,5 +1,7 @@
 # Demand Forecasting Service
 
+[![CI](https://github.com/ganesan-rengan/retail-intelligence/actions/workflows/ci.yml/badge.svg)](https://github.com/ganesan-rengan/retail-intelligence/actions/workflows/ci.yml)
+
 Weekly demand forecasts for retail SKUs, served over a small FastAPI app backed
 by a LightGBM model and a shared Postgres database. Part of the
 `retail-intelligence` monorepo — see [Architecture](#architecture) for how

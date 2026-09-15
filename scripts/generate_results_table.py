@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "forecasting-service" / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "forecasting_service" / "src"))
 
 from split import load_demand, split_by_date
 from train import VALID_WEEKS

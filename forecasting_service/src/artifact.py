@@ -12,7 +12,7 @@ import lightgbm as lgb
 MODEL_DIR = Path(__file__).resolve().parents[2] / "models"
 METRICS_PATH = MODEL_DIR / "metrics.json"
 
-TRAIN_COMMAND = "uv run python forecasting-service/src/train.py"
+TRAIN_COMMAND = "uv run python forecasting_service/src/train.py"
 
 
 def load_metrics() -> dict:

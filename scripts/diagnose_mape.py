@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "forecasting-service" / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "forecasting_service" / "src"))
 
 from baseline import add_baselines
 from split import load_demand, split_by_date

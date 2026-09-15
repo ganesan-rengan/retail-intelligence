@@ -115,7 +115,7 @@ def main() -> None:
     metrics_path = MODEL_DIR / "metrics.json"
     if not metrics_path.exists():
         raise FileNotFoundError(
-            f"{metrics_path} not found. Run: uv run python forecasting-service/src/train.py"
+            f"{metrics_path} not found. Run: uv run python forecasting_service/src/train.py"
         )
     saved = json.loads(metrics_path.read_text())
 

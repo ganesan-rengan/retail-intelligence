@@ -20,7 +20,7 @@ def load_demand(path: Path = DATA_PATH) -> pd.DataFrame:
     """Load the weekly demand table with week_start parsed as a datetime."""
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} not found. Run: uv run python forecasting-service/src/demand.py"
+            f"{path} not found. Run: uv run python forecasting_service/src/demand.py"
         )
     df = pd.read_csv(path, parse_dates=["week_start"])
     return df.sort_values(["product_id", "week_start"]).reset_index(drop=True)

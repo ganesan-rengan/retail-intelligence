@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from artifact import load_metrics, load_model  # noqa: E402
 
 from forecasting_service.app import service
-from forecasting_service.app.config import settings
+from forecasting_service.app.config import get_settings
 from forecasting_service.app.schemas import (
     ErrorResponse,
     ForecastRequest,
@@ -31,7 +31,6 @@ from forecasting_service.app.schemas import (
 )
 from shared.database import get_session
 
-logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
 
 # Populated once at startup, reused for every request.
@@ -41,6 +40,7 @@ state: dict = {}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load the model once when the server boots, not on every request."""
+    logging.basicConfig(level=get_settings().log_level)
     logger.info("Loading model artifact...")
     state["model"] = load_model()
     state["metrics"] = load_metrics()

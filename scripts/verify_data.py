@@ -13,7 +13,7 @@ from sqlalchemy.engine import Connection
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from shared.database import engine
+from shared.database import get_engine
 
 
 @dataclass
@@ -315,7 +315,7 @@ def print_table(headers: list[str], rows: list[list[str]]) -> None:
 
 
 def main() -> None:
-    with engine.connect() as conn:
+    with get_engine().connect() as conn:
         results = [check(conn) for check in CHECKS]
 
         print("CHECKS")

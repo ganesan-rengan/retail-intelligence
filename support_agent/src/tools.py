@@ -6,6 +6,7 @@ customer_id) and search_policy (real cosine-similarity search over
 embedded policy chunks).
 """
 
+import httpx
 from google.genai import types
 from sentence_transformers import SentenceTransformer
 from sqlalchemy import func, select
@@ -17,6 +18,8 @@ from shared.models import Order, OrderItem, PolicyChunk
 # caller's customer_id must come from an authenticated session, never from
 # a module constant.
 CURRENT_CUSTOMER_ID = 12346
+
+FORECASTING_SERVICE_URL = "https://retail-forecasting-service.onrender.com"
 
 # Loaded once at import time, not per-call -- same reasoning as
 # chunk_policies.py: model loading is the expensive part, and this must be
@@ -127,9 +130,47 @@ def search_policy(question: str) -> dict:
     }
 
 
+def get_demand_forecast(product_id: str) -> dict:
+    """Look up the 4-week demand forecast for a product.
+
+    horizon_days is never model-settable -- always 28, the only horizon
+    the deployed model supports -- same reasoning as customer_id never
+    being model-settable in get_order_status_for_model.
+    """
+    try:
+        response = httpx.post(
+            f"{FORECASTING_SERVICE_URL}/forecast",
+            json={"product_id": product_id, "horizon_days": 28},
+            timeout=45.0,
+        )
+    except httpx.RequestError as exc:
+        # Covers both httpx.TimeoutException (Render's free-tier cold
+        # start can take 30-60s) and httpx.ConnectError -- never a bare
+        # except Exception, which would also swallow a real bug (a
+        # malformed URL, a KeyError from bad parsing) and misreport it as
+        # "service unavailable."
+        return {"error": f"Forecasting service unavailable: {exc}"}
+
+    if response.status_code == 404:
+        return {"error": "No demand forecast available for this product"}
+
+    data = response.json()
+    return {
+        "product_id": data["product_id"],
+        "predicted_units": data["predicted_units"],
+        # Pydantic serializes `date` fields to ISO 8601 strings on the
+        # wire (e.g. "2011-12-26") -- passed through as-is, no
+        # date.fromisoformat() round trip, since this is a dict for the
+        # model to read, not typed Python objects for further computation.
+        "week_start": data["week_start"],
+        "week_end": data["week_end"],
+    }
+
+
 TOOLS = {
     "get_order_status": get_order_status_for_model,
     "search_policy": search_policy,
+    "get_demand_forecast": get_demand_forecast,
 }
 
 
@@ -172,5 +213,28 @@ search_policy_declaration = types.FunctionDeclaration(
             ),
         },
         required=["question"],
+    ),
+)
+
+demand_forecast_declaration = types.FunctionDeclaration(
+    name="get_demand_forecast",
+    description=(
+        "Look up the 4-week demand forecast for a product -- predicted "
+        "units and the forecast week's date range. Use this for "
+        "demand/stock-outlook questions, e.g. whether a product is "
+        "expected to be in high demand or is likely to be low in stock. "
+        "Do NOT use this for a specific order's status (use "
+        "get_order_status) or for policy questions like returns or "
+        "shipping rules (use search_policy)."
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "product_id": types.Schema(
+                type=types.Type.STRING,
+                description="The product ID, e.g. '15036'",
+            ),
+        },
+        required=["product_id"],
     ),
 )

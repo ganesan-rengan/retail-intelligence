@@ -61,10 +61,23 @@ def dispatch_call(call: types.FunctionCall) -> tuple[str, bool, dict]:
     return name, known, result
 
 
-def run_agent(user_message: str) -> str:
+def run_agent(
+    user_message: str, messages: list[types.Content] | None = None
+) -> tuple[str, list[types.Content]]:
     """Loop the model against the tool registry until it returns a turn with
-    no function calls, or MAX_ITERATIONS is hit."""
-    messages = [types.Content(role="user", parts=[types.Part(text=user_message)])]
+    no function calls, or MAX_ITERATIONS is hit.
+
+    messages is the caller's held conversation history, not any state
+    run_agent() keeps itself. Omitted (None), this starts a fresh
+    conversation, unchanged from before this parameter existed. Passed in,
+    user_message is appended to it before the loop continues -- enabling a
+    genuine pause between two separate top-level calls (e.g. a propose/
+    confirm write-path gate), since only the caller, not run_agent(), holds
+    what happened in between.
+    """
+    if messages is None:
+        messages = []
+    messages.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
     total_tokens = 0
 
     for iteration in range(1, MAX_ITERATIONS + 1):
@@ -90,7 +103,8 @@ def run_agent(user_message: str) -> str:
         if not function_calls:
             print("  no function calls -- this is the final answer")
             print(f"  TOTAL TOKENS THIS CONVERSATION (incl. thoughts): {total_tokens}")
-            return text_parts
+            messages.append(response.candidates[0].content)
+            return text_parts, messages
 
         if text_parts:
             print(f"  lead-in text: {text_parts.strip()!r}")
@@ -112,7 +126,7 @@ def run_agent(user_message: str) -> str:
 
     print(f"--- hit MAX_ITERATIONS={MAX_ITERATIONS} without a final answer ---")
     print(f"  TOTAL TOKENS THIS CONVERSATION (incl. thoughts): {total_tokens}")
-    return f"Agent did not produce a final answer within {MAX_ITERATIONS} iterations."
+    return f"Agent did not produce a final answer within {MAX_ITERATIONS} iterations.", messages
 
 
 def test_unknown_tool_dispatch() -> None:
@@ -148,7 +162,7 @@ if __name__ == "__main__":
         print("=" * 70)
         print(f"USER: {message}")
         print("=" * 70)
-        answer = run_agent(message)
+        answer, _ = run_agent(message)
         print()
         print(f"FINAL ANSWER: {answer}")
         print()

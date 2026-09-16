@@ -20,6 +20,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from pgvector.sqlalchemy import Vector
+
 
 class Base(DeclarativeBase):
     """Base class all models inherit from. Alembic reads its metadata."""
@@ -127,4 +129,25 @@ class AgentAction(Base):
     outcome: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), index=True
+    )
+
+
+class PolicyChunk(Base):
+    __tablename__ = "policy_chunks"
+
+    chunk_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document: Mapped[str] = mapped_column(String(60), nullable=False)
+    section: Mapped[str] = mapped_column(String(120), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Nullable as a safety margin only. In normal operation this is
+    # always populated in the same insert as `content` -- the loading
+    # script never writes a chunk without its embedding.
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(384))
+
+    __table_args__ = (
+        CheckConstraint(
+            "document IN ('returns_policy', 'shipping_policy', 'refund_policy')",
+            name="ck_policy_chunks_document_valid",
+        ),
     )

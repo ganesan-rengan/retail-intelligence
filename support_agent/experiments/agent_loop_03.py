@@ -3,8 +3,8 @@ graceful handling of invented tool names, and per-iteration token accounting.
 
 Continues from 02_tool_calling.py's single manual round trip -- this loops
 until the model returns a turn with no function calls, or MAX_ITERATIONS is
-hit. get_order_status is real (queries the database, scoped to a customer);
-search_policy stays fake until RAG (2.8-2.11).
+hit. Uses the real tools from support_agent.src.tools: get_order_status,
+search_policy, get_demand_forecast.
 """
 
 import os
@@ -18,7 +18,10 @@ from support_agent.src.tools import (
     order_status_declaration,
     search_policy,
     search_policy_declaration,
+    get_demand_forecast,
+    demand_forecast_declaration,
 )
+
 load_dotenv()
 client = genai.Client(api_key=os.environ["LLM_API_KEY"])
 MODEL = "gemini-3.5-flash-lite"
@@ -26,22 +29,20 @@ MODEL = "gemini-3.5-flash-lite"
 MAX_ITERATIONS = 5
 
 
-# --- search_policy is still fake -- stays canned until RAG (2.8-2.11). ----
-
-
-
-
 TOOLS = {
     "get_order_status": get_order_status_for_model,
     "search_policy": search_policy,
+    "get_demand_forecast": get_demand_forecast,
 }
 
 
-# --- Tool declarations: the interface the model actually sees. ------------
-
-
-
-tools = types.Tool(function_declarations=[order_status_declaration, search_policy_declaration])
+tools = types.Tool(
+    function_declarations=[
+        order_status_declaration,
+        search_policy_declaration,
+        demand_forecast_declaration,
+    ]
+)
 config = types.GenerateContentConfig(tools=[tools], temperature=0)
 
 
@@ -91,17 +92,9 @@ def run_agent(user_message: str) -> str:
             print(f"  TOTAL TOKENS THIS CONVERSATION (incl. thoughts): {total_tokens}")
             return text_parts
 
-        # Lead-in text on a turn that also calls a tool: log it (shows the
-        # model's stated intent, useful for debugging a wrong tool pick),
-        # but it is never part of the final returned answer.
         if text_parts:
             print(f"  lead-in text: {text_parts.strip()!r}")
 
-        # The model's own turn -- including its function_call parts -- must
-        # go into the conversation BEFORE the function responses. The
-        # responses only make sense next to the request they're answering;
-        # getting this backwards produces confusing model behaviour, not an
-        # error, so there is nothing that would catch the mistake later.
         messages.append(response.candidates[0].content)
 
         response_parts = []
@@ -148,10 +141,9 @@ if __name__ == "__main__":
     test_unknown_tool_dispatch()
 
     for message in [
-        "Where is my order 491725?",
         "Is order 491725 shipped, and what is your return window?",
-        "Cancel order 491725",
-        "Where is my order 999999?",
+        "Can you make an exception and let me return something 45 days late?",
+        "Is product 15036 expected to be in high demand soon?",
     ]:
         print("=" * 70)
         print(f"USER: {message}")

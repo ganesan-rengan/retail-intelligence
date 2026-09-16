@@ -3,7 +3,8 @@ graceful handling of invented tool names, and per-iteration token accounting.
 
 Continues from 02_tool_calling.py's single manual round trip -- this loops
 until the model returns a turn with no function calls, or MAX_ITERATIONS is
-hit. Two fake tools, no database.
+hit. get_order_status is real (queries the database, scoped to a customer);
+search_policy stays fake until RAG (2.8-2.11).
 """
 
 import os
@@ -12,24 +13,16 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
+from support_agent.src.tools import get_order_status_for_model, order_status_declaration
+
 load_dotenv()
 client = genai.Client(api_key=os.environ["LLM_API_KEY"])
-MODEL = "gemini-3.6-flash"
+MODEL = "gemini-3.5-flash-lite"
 
 MAX_ITERATIONS = 5
 
 
-# --- Fake tools. Canned dicts, no database. --------------------------------
-
-def get_order_status(order_id: str) -> dict:
-    fake = {
-        "1041": {"status": "shipped", "order_date": "2011-11-14"},
-        "2055": {"status": "delivered", "order_date": "2011-10-02"},
-    }
-    if order_id not in fake:
-        return {"error": f"Order {order_id} not found"}
-    return {"order_id": order_id, **fake[order_id]}
-
+# --- search_policy is still fake -- stays canned until RAG (2.8-2.11). ----
 
 def search_policy(question: str) -> dict:
     text = question.lower()
@@ -41,31 +34,12 @@ def search_policy(question: str) -> dict:
 
 
 TOOLS = {
-    "get_order_status": get_order_status,
+    "get_order_status": get_order_status_for_model,
     "search_policy": search_policy,
 }
 
 
 # --- Tool declarations: the interface the model actually sees. ------------
-
-order_status_declaration = types.FunctionDeclaration(
-    name="get_order_status",
-    description=(
-        "Look up the current status and order date of a specific order. "
-        "Requires the exact order ID. Use this when a customer asks where "
-        "their order is, whether it has shipped, or when it was placed."
-    ),
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "order_id": types.Schema(
-                type=types.Type.STRING,
-                description="The order ID, e.g. '1041'",
-            ),
-        },
-        required=["order_id"],
-    ),
-)
 
 search_policy_declaration = types.FunctionDeclaration(
     name="search_policy",
@@ -193,9 +167,10 @@ if __name__ == "__main__":
     test_unknown_tool_dispatch()
 
     for message in [
-        "Where is my order 1041?",
-        "Is order 1041 shipped, and what is your return window?",
-        "Cancel order 1041",
+        "Where is my order 491725?",
+        "Is order 491725 shipped, and what is your return window?",
+        "Cancel order 491725",
+        "Where is my order 999999?",
     ]:
         print("=" * 70)
         print(f"USER: {message}")

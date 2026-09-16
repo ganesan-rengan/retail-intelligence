@@ -13,8 +13,12 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from support_agent.src.tools import get_order_status_for_model, order_status_declaration
-
+from support_agent.src.tools import (
+    get_order_status_for_model,
+    order_status_declaration,
+    search_policy,
+    search_policy_declaration,
+)
 load_dotenv()
 client = genai.Client(api_key=os.environ["LLM_API_KEY"])
 MODEL = "gemini-3.5-flash-lite"
@@ -24,13 +28,7 @@ MAX_ITERATIONS = 5
 
 # --- search_policy is still fake -- stays canned until RAG (2.8-2.11). ----
 
-def search_policy(question: str) -> dict:
-    text = question.lower()
-    if "return" in text or "refund" in text:
-        return {"policy": "Items can be returned within 30 days of delivery for a full refund."}
-    if "shipping" in text or "delivery" in text:
-        return {"policy": "Standard shipping takes 3-5 business days."}
-    return {"policy": "No specific policy found for this question."}
+
 
 
 TOOLS = {
@@ -41,24 +39,7 @@ TOOLS = {
 
 # --- Tool declarations: the interface the model actually sees. ------------
 
-search_policy_declaration = types.FunctionDeclaration(
-    name="search_policy",
-    description=(
-        "Search store policy documents (returns, refunds, shipping, etc.) "
-        "for an answer to a general policy question. Use this for questions "
-        "about rules or windows, not for looking up a specific order."
-    ),
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "question": types.Schema(
-                type=types.Type.STRING,
-                description="The customer's policy question, in their own words.",
-            ),
-        },
-        required=["question"],
-    ),
-)
+
 
 tools = types.Tool(function_declarations=[order_status_declaration, search_policy_declaration])
 config = types.GenerateContentConfig(tools=[tools], temperature=0)

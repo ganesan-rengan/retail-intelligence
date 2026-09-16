@@ -22,3 +22,21 @@ measure both retrieval accuracy AND the token/iteration cost of recovery,
 since a system that "eventually gets there" via retries is a materially
 different (and more expensive) reliability story than one with accurate
 first-pass retrieval.
+
+
+## Update: a retrieval failure produced a false claim about document content
+
+In a later run, the same underlying question (order 491725's return
+window) retrieved returns_policy / 2. Return Conditions (about item
+condition) but never found / 1. Return Eligibility (which states the
+actual 30-day figure). Rather than expressing uncertainty, the agent
+stated: "Our policy documents do not specify a fixed time-window in
+days for returns" -- a confident claim that the DOCUMENT lacks
+information, when the actual gap is in RETRIEVAL, not content. This is
+a distinct failure shape from ADR-011's pattern (overstating a rule
+that WAS retrieved): here the agent asserts something false about what
+a document contains, based on not having seen the part that contains
+it. Worth an eval case distinguishing "correctly reports uncertainty"
+("I couldn't find that specific detail") from "incorrectly asserts
+absence" ("the policy doesn't cover this") when retrieval genuinely
+missed relevant content that exists.

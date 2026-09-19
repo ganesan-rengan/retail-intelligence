@@ -4,7 +4,7 @@ graceful handling of invented tool names, and per-iteration token accounting.
 Continues from 02_tool_calling.py's single manual round trip -- this loops
 until the model returns a turn with no function calls, or MAX_ITERATIONS is
 hit. Uses the real tools from support_agent.src.tools: get_order_status,
-search_policy, get_demand_forecast.
+search_policy, get_demand_forecast, propose_return, confirm_return.
 """
 
 import os
@@ -20,6 +20,10 @@ from support_agent.src.tools import (
     search_policy_declaration,
     get_demand_forecast,
     demand_forecast_declaration,
+    propose_return_for_model,
+    propose_return_declaration,
+    confirm_return_for_model,
+    confirm_return_declaration,
 )
 
 load_dotenv()
@@ -33,6 +37,8 @@ TOOLS = {
     "get_order_status": get_order_status_for_model,
     "search_policy": search_policy,
     "get_demand_forecast": get_demand_forecast,
+    "propose_return": propose_return_for_model,
+    "confirm_return": confirm_return_for_model,
 }
 
 
@@ -41,6 +47,8 @@ tools = types.Tool(
         order_status_declaration,
         search_policy_declaration,
         demand_forecast_declaration,
+        propose_return_declaration,
+        confirm_return_declaration,
     ]
 )
 config = types.GenerateContentConfig(tools=[tools], temperature=0)
@@ -79,6 +87,7 @@ def run_agent(
         messages = []
     messages.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
     total_tokens = 0
+    proposed_this_turn = False
 
     for iteration in range(1, MAX_ITERATIONS + 1):
         response = client.models.generate_content(model=MODEL, contents=messages, config=config)
@@ -90,7 +99,7 @@ def run_agent(
 
         print(f"--- iteration {iteration} ---")
         print(
-            f"  tokens: prompt={getattr(usage, 'prompt_token_count', None)} "
+            f"  tokens: prompt={getattr(usage, 'prompt_token_count', None)}"
             f"candidates={getattr(usage, 'candidates_token_count', None)} "
             f"thoughts={thoughts} total={iter_total} "
             f"(running total={total_tokens})"
@@ -113,8 +122,29 @@ def run_agent(
 
         response_parts = []
         for call_part in function_calls:
-            name, known, result = dispatch_call(call_part.function_call)
-            args = dict(call_part.function_call.args or {})
+            call = call_part.function_call
+            args = dict(call.args or {})
+
+            # Gate 1's actual enforcement point. propose_return_declaration's
+            # description asks the model not to chain these in one turn, but
+            # a prompt instruction is a request, not a guarantee -- this is
+            # what actually stops it if it tries anyway. proposed_this_turn
+            # is local to this single run_agent() invocation, so a genuinely
+            # separate, later run_agent() call is never affected by it.
+            if call.name == "confirm_return" and proposed_this_turn:
+                name, known = call.name, True
+                result = {
+                    "error": (
+                        "confirm_return cannot be called in the same "
+                        "conversation turn as propose_return. A separate "
+                        "message from the customer confirming they want to "
+                        "proceed is required first."
+                    )
+                }
+            else:
+                name, known, result = dispatch_call(call)
+                if name == "propose_return" and known:
+                    proposed_this_turn = True
 
             print(f"  tool: {name} [{'KNOWN' if known else 'INVENTED'}]")
             print(f"    args: {args}")

@@ -119,6 +119,35 @@ class Return(Base):
     )
 
 
+class PendingReturn(Base):
+    __tablename__ = "pending_returns"
+
+    pending_return_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    order_id: Mapped[str] = mapped_column(
+        ForeignKey("orders.order_id"), nullable=False, index=True
+    )
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.customer_id"), nullable=False, index=True
+    )
+    reason: Mapped[str | None] = mapped_column(Text)
+    confirmation_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    order: Mapped["Order"] = relationship("Order")
+
+    __table_args__ = (
+        UniqueConstraint("confirmation_token", name="uq_pending_returns_confirmation_token"),
+        CheckConstraint(
+            "status IN ('pending', 'confirmed', 'expired')",
+            name="ck_pending_returns_status_valid",
+        ),
+    )
+
+
 class AgentAction(Base):
     __tablename__ = "agent_actions"
 

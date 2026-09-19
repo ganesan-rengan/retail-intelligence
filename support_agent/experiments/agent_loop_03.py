@@ -99,7 +99,7 @@ def run_agent(
 
         print(f"--- iteration {iteration} ---")
         print(
-            f"  tokens: prompt={getattr(usage, 'prompt_token_count', None)}"
+            f"  tokens: prompt={getattr(usage, 'prompt_token_count', None)} "
             f"candidates={getattr(usage, 'candidates_token_count', None)} "
             f"thoughts={thoughts} total={iter_total} "
             f"(running total={total_tokens})"

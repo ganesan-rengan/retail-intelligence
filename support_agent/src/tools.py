@@ -6,13 +6,17 @@ customer_id) and search_policy (real cosine-similarity search over
 embedded policy chunks).
 """
 
+import secrets
+from datetime import datetime, timedelta
+
 import httpx
 from google.genai import types
 from sentence_transformers import SentenceTransformer
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from shared.database import get_session
-from shared.models import Order, OrderItem, PolicyChunk
+from shared.models import Order, OrderItem, PendingReturn, PolicyChunk, Return
 
 # TEMPORARY: stands in for real auth (step 2.21). Once auth exists, the
 # caller's customer_id must come from an authenticated session, never from
@@ -35,6 +39,15 @@ EMBEDDING_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
 # questions before trusting this number, and keep the old numbers here as
 # a before/after baseline when it's re-tuned.
 SIMILARITY_THRESHOLD = 0.5
+
+# From returns_policy.md: a return must be initiated within 30 days of the
+# order date.
+RETURN_WINDOW_DAYS = 30
+
+# How long a proposed return stays confirmable. This is a real wall-clock
+# duration (unlike the return-window anchor in propose_return, which is
+# data-anchored).
+CONFIRMATION_TTL_MINUTES = 15
 
 
 def get_order_status(order_id: str, customer_id: int) -> dict:
@@ -167,10 +180,156 @@ def get_demand_forecast(product_id: str) -> dict:
     }
 
 
+def propose_return(order_id: str, reason: str, customer_id: int) -> dict:
+    """Gate 1, step 1: check eligibility and record a PROPOSED return.
+
+    Writes only to pending_returns, never to returns -- nothing here
+    creates a real return. The caller gets a single-use confirmation
+    token; confirm_return(token) is the only path to a real return.
+
+    HISTORICAL-DATA-ONLY CAVEAT: the 30-day window is measured against
+    MAX(orders.order_date), NOT the current date. The dataset is a frozen
+    2010-2011 snapshot, so real "today" would reject every order. A real
+    system MUST replace that anchor with actual wall-clock time
+    (datetime.now()).
+    """
+    with get_session() as session:
+        # Same single-query ownership check as get_order_status: a missing
+        # order and someone else's order are indistinguishable.
+        order = session.execute(
+            select(Order).where(
+                Order.order_id == order_id,
+                Order.customer_id == customer_id,
+            )
+        ).scalar_one_or_none()
+
+        if order is None:
+            return {"error": "Order not found"}
+
+        if order.status != "delivered":
+            return {
+                "error": (
+                    f"Order is not eligible for return: status is "
+                    f"'{order.status}', only 'delivered' orders can be returned"
+                )
+            }
+
+        # HISTORICAL-DATA-ONLY: anchor "now" to the newest order in the
+        # data, computed live on every call (never hardcoded). This looks
+        # like a bug next to real wall-clock logic but is deliberate --
+        # the data ends in 2011, so datetime.now() would make every order
+        # ineligible. A real system must use actual wall-clock time here.
+        anchor = session.execute(select(func.max(Order.order_date))).scalar_one()
+
+        age = anchor - order.order_date
+        if age > timedelta(days=RETURN_WINDOW_DAYS):
+            return {
+                "error": (
+                    f"Order is not eligible for return: placed {age.days} "
+                    f"days before the reference date {anchor.date()} "
+                    f"(latest order date in the data), outside the "
+                    f"{RETURN_WINDOW_DAYS}-day return window"
+                )
+            }
+
+        pending = PendingReturn(
+            order_id=order.order_id,
+            customer_id=customer_id,
+            reason=reason,
+            confirmation_token=secrets.token_urlsafe(32),
+            # Set explicitly: the column's default is ORM-side only.
+            status="pending",
+            expires_at=datetime.now() + timedelta(minutes=CONFIRMATION_TTL_MINUTES),
+        )
+        session.add(pending)
+        session.commit()
+
+        return {
+            "confirmation_token": pending.confirmation_token,
+            "order_id": pending.order_id,
+            "reason": pending.reason,
+            "expires_at": str(pending.expires_at),
+            "message": (
+                "Return proposed but NOT yet submitted. Ask the customer to "
+                "confirm; only then call confirm_return with this token."
+            ),
+        }
+
+
+def propose_return_for_model(order_id: str, reason: str) -> dict:
+    """Registered wrapper: binds CURRENT_CUSTOMER_ID, same as
+    get_order_status_for_model."""
+    return propose_return(order_id, reason, CURRENT_CUSTOMER_ID)
+
+
+def confirm_return(confirmation_token: str, customer_id: int) -> dict:
+    """Gate 1, step 2: turn a pending proposal into a real return.
+
+    Atomic: the returns insert and the pending -> confirmed flip share one
+    commit (get_session() has autoflush=False, so nothing is written until
+    commit(), same precedent as chunk_policies.py). The returns row uses
+    the token as its idempotency_key, so two concurrent confirmations of
+    the same token both pass the status check but the second hits
+    uq_returns_idempotency_key -- Gate 1 (confirmation) and Gate 3
+    (idempotency) reinforce each other structurally.
+    """
+    with get_session() as session:
+        # Token AND customer_id AND status, in one query: an unknown,
+        # foreign, or already-used token all get the same answer.
+        pending = session.execute(
+            select(PendingReturn).where(
+                PendingReturn.confirmation_token == confirmation_token,
+                PendingReturn.customer_id == customer_id,
+                PendingReturn.status == "pending",
+            )
+        ).scalar_one_or_none()
+
+        if pending is None:
+            return {"error": "Confirmation not found or no longer valid"}
+
+        if pending.expires_at < datetime.now():
+            pending.status = "expired"
+            session.commit()
+            return {"error": "This confirmation has expired"}
+
+        new_return = Return(
+            order_id=pending.order_id,
+            reason=pending.reason,
+            status="requested",
+            idempotency_key=pending.confirmation_token,
+        )
+        session.add(new_return)
+        pending.status = "confirmed"
+
+        try:
+            session.commit()
+        except IntegrityError as exc:
+            session.rollback()
+            # Only the idempotency constraint means "already used". Any
+            # other integrity failure (e.g. a primary-key collision) is a
+            # real bug and must surface, not be mislabeled as a lost race.
+            if getattr(exc.orig.diag, "constraint_name", None) != "uq_returns_idempotency_key":
+                raise
+            return {"error": "This confirmation has already been used"}
+
+        return {
+            "return_id": new_return.return_id,
+            "order_id": new_return.order_id,
+            "status": new_return.status,
+        }
+
+
+def confirm_return_for_model(confirmation_token: str) -> dict:
+    """Registered wrapper: binds CURRENT_CUSTOMER_ID."""
+    return confirm_return(confirmation_token, CURRENT_CUSTOMER_ID)
+
+
 TOOLS = {
     "get_order_status": get_order_status_for_model,
     "search_policy": search_policy,
     "get_demand_forecast": get_demand_forecast,
+    "propose_return": propose_return_for_model,
+    "confirm_return": confirm_return_for_model,
 }
 
 
@@ -236,5 +395,50 @@ demand_forecast_declaration = types.FunctionDeclaration(
             ),
         },
         required=["product_id"],
+    ),
+)
+
+propose_return_declaration = types.FunctionDeclaration(
+    name="propose_return",
+    description=(
+        "Start a return for a delivered order. This only PROPOSES the "
+        "return and checks eligibility -- it does not submit anything. It "
+        "returns a confirmation token; tell the customer what will be "
+        "returned and ask them to confirm before calling confirm_return. "
+        "Use only when the customer explicitly asks to return an order."
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "order_id": types.Schema(
+                type=types.Type.STRING,
+                description="The order ID to return, e.g. '541431'",
+            ),
+            "reason": types.Schema(
+                type=types.Type.STRING,
+                description="The customer's reason for the return, in their own words.",
+            ),
+        },
+        required=["order_id", "reason"],
+    ),
+)
+
+confirm_return_declaration = types.FunctionDeclaration(
+    name="confirm_return",
+    description=(
+        "Submit a proposed return. Call this ONLY after propose_return has "
+        "succeeded AND the customer has explicitly confirmed in their own "
+        "message. Never call it in the same turn as propose_return, and "
+        "never invent a token -- use exactly the one propose_return gave."
+    ),
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "confirmation_token": types.Schema(
+                type=types.Type.STRING,
+                description="The confirmation_token returned by propose_return.",
+            ),
+        },
+        required=["confirmation_token"],
     ),
 )

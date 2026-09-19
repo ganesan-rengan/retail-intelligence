@@ -69,6 +69,39 @@ def dispatch_call(call: types.FunctionCall) -> tuple[str, bool, dict]:
     return name, known, result
 
 
+def dispatch_with_gate(
+    call: types.FunctionCall, proposed_this_turn: bool
+) -> tuple[str, bool, dict, bool]:
+    """dispatch_call() plus Gate 1's enforcement, as one callable unit.
+
+    Gate 1's actual enforcement point. propose_return_declaration's
+    description asks the model not to chain these in one turn, but a
+    prompt instruction is a request, not a guarantee -- this is what
+    actually stops it if it tries anyway. proposed_this_turn is owned by
+    the caller (one run_agent() invocation), so a genuinely separate,
+    later run_agent() call is never affected by it.
+
+    Returns (name, known, result, proposed_this_turn), where the last
+    element is the caller's flag, updated if this call was a successful
+    dispatch of propose_return.
+    """
+    if call.name == "confirm_return" and proposed_this_turn:
+        result = {
+            "error": (
+                "confirm_return cannot be called in the same "
+                "conversation turn as propose_return. A separate "
+                "message from the customer confirming they want to "
+                "proceed is required first."
+            )
+        }
+        return call.name, True, result, proposed_this_turn
+
+    name, known, result = dispatch_call(call)
+    if name == "propose_return" and known:
+        proposed_this_turn = True
+    return name, known, result, proposed_this_turn
+
+
 def run_agent(
     user_message: str, messages: list[types.Content] | None = None
 ) -> tuple[str, list[types.Content]]:
@@ -125,26 +158,9 @@ def run_agent(
             call = call_part.function_call
             args = dict(call.args or {})
 
-            # Gate 1's actual enforcement point. propose_return_declaration's
-            # description asks the model not to chain these in one turn, but
-            # a prompt instruction is a request, not a guarantee -- this is
-            # what actually stops it if it tries anyway. proposed_this_turn
-            # is local to this single run_agent() invocation, so a genuinely
-            # separate, later run_agent() call is never affected by it.
-            if call.name == "confirm_return" and proposed_this_turn:
-                name, known = call.name, True
-                result = {
-                    "error": (
-                        "confirm_return cannot be called in the same "
-                        "conversation turn as propose_return. A separate "
-                        "message from the customer confirming they want to "
-                        "proceed is required first."
-                    )
-                }
-            else:
-                name, known, result = dispatch_call(call)
-                if name == "propose_return" and known:
-                    proposed_this_turn = True
+            name, known, result, proposed_this_turn = dispatch_with_gate(
+                call, proposed_this_turn
+            )
 
             print(f"  tool: {name} [{'KNOWN' if known else 'INVENTED'}]")
             print(f"    args: {args}")

@@ -11,6 +11,12 @@ from sqlalchemy.orm import Session, sessionmaker
 load_dotenv()
 
 
+# lru_cache does not guarantee single execution under concurrent first calls
+# (verified empirically: two threads released through a barrier both ran this
+# function and got different Engine objects, Python 3.12.14). On a cold
+# start, concurrent first requests could each build a separate connection
+# pool. Not corrupting, but wasteful. test_gate1.py scenario 10 avoids the
+# problem by calling get_engine() in the main thread before starting workers.
 @lru_cache
 def get_engine() -> Engine:
     """Built on first use, not at import time -- so importing this module

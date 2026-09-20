@@ -1,4 +1,4 @@
-"""Nine-scenario check of Gate 1 (propose -> confirm) against the real DB.
+"""Ten-scenario check of Gate 1 (propose -> confirm) against the real DB.
 
 Run from the repo root:  uv run python -m support_agent.experiments.test_gate1
 
@@ -10,7 +10,9 @@ Scenario 8 removes that dependence: it forces the attempt with a scripted
 model, so the structural refusal in dispatch_with_gate is actually run. Scenario 8 also
 asserts on the agent_actions audit rows those dispatches write; scenario 9
 tests log_action itself (masking, no mutation, truncation, odd values,
-failure swallowing).
+failure swallowing). Scenario 10 calls confirm_return() from two real
+threads at once and forces their reads to overlap, so Gate 1 and Gate 3
+(the unique idempotency key) are shown to hold under a genuine race.
 
 Customer 12346 has no order inside the 30-day window (the data is anchored
 to 2011-12-09 and their newest order is 325 days older), so this script
@@ -23,14 +25,17 @@ import contextlib
 import copy
 import io
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest import mock
 
 from google.genai import types
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, event, func, select
 
-from shared.database import get_session
+from shared.database import get_engine, get_session
 from shared.models import AgentAction, Order, PendingReturn, Return
 from support_agent.src import tools as tools_module
 from support_agent.src.tools import (
@@ -472,6 +477,113 @@ def scenario_9() -> None:
     check("9e", secret not in err.getvalue(), "stderr report does not leak the token")
 
 
+def scenario_10() -> None:
+    print("\n[10] concurrent confirm_return(), forced read overlap (real threads, real DB)")
+    # Built here, in the main thread, before any worker exists: get_engine() is
+    # an lru_cache, which does not guarantee a single build under concurrent
+    # first calls, and the listener below must attach to the engine the
+    # workers actually use.
+    engine = get_engine()
+
+    def new_token(reason: str) -> str:
+        return propose_return(FIXTURE_ORDER_ID, reason, CURRENT_CUSTOMER_ID)["confirmation_token"]
+
+    # --- 10a: two threads, one token, reads forced to overlap ---
+    # confirm_return() has no seam between its SELECT and its commit, and a
+    # barrier before the call only aligns the two threads' START, not the
+    # few-hundred-microsecond gap between read and write; without more, one
+    # thread often finishes before the other's SELECT lands, and this becomes
+    # a sequential test. So: an engine listener makes each worker wait, right
+    # after its pending_returns SELECT returns, until BOTH have read. Neither
+    # can write before both have seen status='pending'. Nothing in tools.py
+    # is touched; the listener only observes and waits.
+    print("  10a: two threads confirm the same token, both reads forced before either write")
+    token = new_token("test: 10a race")
+    before = returns_for(FIXTURE_ORDER_ID)
+
+    start = threading.Barrier(2, timeout=10)
+    overlap = threading.Barrier(2, timeout=10)  # a timeout fails the test instead of hanging it
+    lock = threading.Lock()
+    workers: set[int] = set()  # idents of the two worker threads, so main-thread queries are ignored
+    timeline: dict[int, dict[str, float]] = {}
+
+    def after_execute(conn, cursor, statement, parameters, context, executemany):
+        ident = threading.get_ident()
+        if ident not in workers:
+            return
+        sql = statement.lstrip().upper()
+        if sql.startswith("SELECT") and "PENDING_RETURNS" in sql:
+            with lock:
+                timeline[ident]["select_done"] = time.perf_counter()
+            overlap.wait()
+
+    def before_execute(conn, cursor, statement, parameters, context, executemany):
+        ident = threading.get_ident()
+        if ident in workers and statement.lstrip().upper().startswith("INSERT INTO RETURNS"):
+            with lock:
+                timeline[ident].setdefault("first_write", time.perf_counter())
+
+    def worker() -> dict:
+        with lock:
+            workers.add(threading.get_ident())
+            timeline[threading.get_ident()] = {}
+        start.wait()
+        return confirm_return(token, CURRENT_CUSTOMER_ID)
+
+    event.listen(engine, "after_cursor_execute", after_execute)
+    event.listen(engine, "before_cursor_execute", before_execute)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(worker) for _ in range(2)]
+            results = [f.result(timeout=30) for f in futures]
+    except Exception as exc:  # a broken barrier or a crashed worker is a failure, not a hang
+        record("10", "FAIL", f"race run did not complete cleanly: {type(exc).__name__}: {exc}")
+        return
+    finally:
+        event.remove(engine, "after_cursor_execute", after_execute)
+        event.remove(engine, "before_cursor_execute", before_execute)
+
+    winners = [r for r in results if "return_id" in r]
+    losers = [r for r in results if "return_id" not in r]
+    print(f"  results: {results}")
+    check("10a", len(winners) == 1 and len(losers) == 1, f"exactly one winner and one loser: {len(winners)}/{len(losers)}")
+    ALREADY_USED = {"error": "This confirmation has already been used"}
+    check("10a", losers == [ALREADY_USED],
+          f"loser got the IntegrityError-path answer, not a crash or a 'not found': {losers}")
+
+    # Proof the reads genuinely overlapped, independent of the message above.
+    complete = len(timeline) == 2 and all({"select_done", "first_write"} <= t.keys() for t in timeline.values())
+    check("10a", complete, f"both workers recorded a SELECT and a first write: {sorted(k for t in timeline.values() for k in t)}")
+    if complete:
+        last_read = max(t["select_done"] for t in timeline.values())
+        first_write = min(t["first_write"] for t in timeline.values())
+        check("10a", last_read < first_write,
+              f"both SELECTs finished before either write started (gap {(first_write - last_read) * 1e3:.2f} ms)")
+
+    # Ground truth is the database, not the dicts the calls returned.
+    check("10a", returns_for(FIXTURE_ORDER_ID) == before + 1, "exactly one new returns row for the order (DB checked)")
+    check("10a", count_rows(Return, Return.idempotency_key == token) == 1, "exactly one returns row carries this token")
+    with get_session() as session:
+        row_id = session.execute(select(Return.return_id).where(Return.idempotency_key == token)).scalar_one_or_none()
+    check("10a", bool(winners) and winners[0]["return_id"] == row_id, f"winner's return_id matches the DB row: {row_id}")
+    check("10a", pending_status(token) == "confirmed", "pending row is 'confirmed'")
+
+    # --- 10b: sequential control, fresh token ---
+    # Same two calls, one after the other. If serialization could produce the
+    # 10a loser message, 10a would prove nothing; this shows it produces a
+    # DIFFERENT one ('not found', from the status='pending' filter).
+    print("  10b: control, same two calls back to back on a second token")
+    token2 = new_token("test: 10b sequential")
+    before = returns_for(FIXTURE_ORDER_ID)
+    first = confirm_return(token2, CURRENT_CUSTOMER_ID)
+    second = confirm_return(token2, CURRENT_CUSTOMER_ID)
+    check("10b", "return_id" in first, f"first call wins: {first}")
+    check("10b", second == {"error": "Confirmation not found or no longer valid"}, f"second call: {second}")
+    check("10b", bool(losers) and second != losers[0],
+          "sequential loser message differs from the concurrent one, so 10a's message really does mean 'raced'")
+    check("10b", returns_for(FIXTURE_ORDER_ID) == before + 1, "exactly one returns row created (DB checked)")
+
+
 def main() -> int:
     baseline_returns = count_rows(Return)
     baseline_pending = count_rows(PendingReturn)
@@ -486,7 +598,7 @@ def main() -> int:
     try:
         for scenario in (
             scenario_1, scenario_2, scenario_3, scenario_4,
-            scenario_5, scenario_6, scenario_7, scenario_8, scenario_9,
+            scenario_5, scenario_6, scenario_7, scenario_8, scenario_9, scenario_10,
         ):
             try:
                 scenario()

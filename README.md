@@ -5,7 +5,7 @@
 Weekly demand forecasts for retail SKUs, served over a small FastAPI app backed
 by a LightGBM model and a shared Postgres database. Part of the
 `retail-intelligence` monorepo — see [Architecture](#architecture) for how
-this fits alongside the planned support agent.
+this fits alongside the support agent (Project 2, in progress).
 
 ## Live service
 
@@ -45,7 +45,7 @@ flowchart LR
 
     subgraph render["Render (Singapore)"]
         forecast["Forecasting Service — FastAPI\n(Project 1, deployed)"]
-        agent["Support Agent — FastAPI\n(Project 2, planned)"]
+        agent["Support Agent\n(Project 2, in progress)"]
     end
 
     subgraph neon["Neon — Postgres 16 + pgvector (Singapore)"]
@@ -60,14 +60,10 @@ flowchart LR
     forecast -->|"loads at startup"| artifact
     agent -.->|"reads/writes orders,\nlogs to agent_actions"| db
     agent -.->|"tool calls"| llm
-
-    classDef planned stroke-dasharray:5 5
-    class agent,llm planned
 ```
 
-The `agent_actions` table and the `pgvector` extension are already
-provisioned in the schema for the support agent's tool-call logging and
-retrieval — reserved, not yet used by anything.
+The support agent writes every tool call to `agent_actions` and retrieves
+policy text through `pgvector`; see [Support agent](#support-agent-project-2).
 
 ## Deployment pipeline
 
@@ -134,6 +130,81 @@ as ADRs where noted.
   of silently skipping a partially-loaded table or re-truncating everything
   on every retry.
 
+## Support agent (Project 2)
+
+A tool-calling support agent over the same Postgres database, in
+`support_agent/`. It is a script-driven loop (`run_agent()` in
+`support_agent/experiments/agent_loop_03.py`, capped at 5 iterations), not a
+deployed service. It answers policy questions from retrieved documents,
+reports order status, relays demand forecasts from Project 1, and can file a
+return only through a two-step propose/confirm flow.
+
+### Retrieval (RAG)
+
+- **Chunking:** the three policy documents in `support_agent/data/policies/`
+  (refund, returns, shipping) are split on their `## ` headings, one chunk per
+  section: 18 chunks in the live table (7 + 5 + 6). There is no overlap and no
+  size-based splitting.
+- **Embeddings:** `all-MiniLM-L6-v2` (sentence-transformers), stored in the
+  `policy_chunks` table via pgvector. The same model must be used to chunk and
+  to query, or the vectors live in incompatible spaces.
+- **Search:** cosine distance (`<=>`), top 3, then anything farther than
+  `SIMILARITY_THRESHOLD = 0.5` is dropped. That threshold is an initial guess
+  from one spot-check, not a tuned value.
+- **Known limitation ([ADR-010](docs/adr/010-rag-retrieval-limitation.md)):**
+  "What is your return window?" retrieves nothing, although the answer is in
+  the Return Eligibility section. The agent sometimes recovers by rephrasing,
+  at about three times the tool calls and tokens, and once wrongly told a
+  customer that the policy documents do not specify a return window.
+
+### Tools
+
+Five tools are registered. Three touch customer-private data
+(`get_order_status`, `propose_return`, `confirm_return`); each is bound to the
+customer server-side and `customer_id` never appears in a schema the model
+sees. Two touch public data and have nothing to scope: `search_policy` and
+`get_demand_forecast` (which calls the deployed forecasting API). See
+[ADR-012](docs/adr/012-gate2-scope-boundary-verified.md). Registering
+`search_policy` also stopped the model inventing a `search_faq` tool for
+policy questions ([ADR-009](docs/adr/009-tool-name-hallucination.md)); the
+dispatcher's tool-name validation is the permanent defense against the
+general case.
+
+### Return flow and the four gates
+
+`propose_return` validates the order (owned by the customer, status
+`delivered`, inside the 30-day window) and writes a row to `pending_returns`
+with a single-use token from `secrets.token_urlsafe(32)`. Nothing is written
+to `returns` yet. A later, separate customer message lets the agent call
+`confirm_return(token)`, the only path from a pending proposal to a real
+`returns` row. The token expires after **15 minutes**
+(`CONFIRMATION_TTL_MINUTES` in `support_agent/src/tools.py`). That is real
+wall-clock time, unlike the 30-day window, which is measured from the
+dataset's latest order date (2011-12-09) rather than from today.
+
+The design rationale behind this flow, and the full list of checks that back
+it, is in [ADR-013](docs/adr/013-gate1-pending-returns-design.md).
+
+| Gate | What it enforces | How it was verified |
+|---|---|---|
+| 1. Confirmation | No write without a separate confirming turn. `dispatch_with_gate()` refuses `confirm_return` in the same `run_agent()` call as `propose_return`, whatever the model attempts. | `test_gate1.py` scenarios 1-6 exercise the tools directly. Scenario 8 forces the chained attempt with a scripted model and checks the refusal text, that no `returns` row exists, and that the token stays pending. The live-model version (scenario 7) never got the model to attempt the chain, so it proves nothing on its own. |
+| 2. Scoping | Customer-private tools use the server-side customer, never a model-supplied one, and `confirm_return` re-checks ownership rather than trusting the token alone. | Code review of all five tools ([ADR-012](docs/adr/012-gate2-scope-boundary-verified.md)), plus scenario 5: a real token presented by the wrong customer gets the identical answer to an invented token. |
+| 3. Idempotency | A token can be redeemed once: it doubles as `returns.idempotency_key` under the unique constraint `uq_returns_idempotency_key`. | Scenario 4: a second confirm of the same token is refused and exactly one `returns` row exists. |
+| 4. Audit logging | Every call through `dispatch_with_gate()`, including refusals, writes one `agent_actions` row. `confirmation_token` is masked to 8 characters in the logged arguments and outcome. Logging is best-effort and can never change the tool result. | Scenarios 8 and 9 assert on the real rows. Masking was also deliberately disabled once to confirm the assertions fail (they did), then restored. |
+
+### Tests
+
+There are two separate test efforts, not one suite:
+
+- **46 pytest tests** in `tests/` (metrics, features, split, API,
+  integration). These are what CI runs (45 of them; the integration test is
+  deselected).
+- **9 script-based scenarios** in `support_agent/experiments/test_gate1.py`,
+  run with `uv run python -m support_agent.experiments.test_gate1`. They run
+  against the real database, create and delete their own fixture rows, and
+  verify the cleanup. pytest does not collect them and CI does not run them.
+  Whether to fold them into pytest and CI is an open decision.
+
 ## Limitations
 
 - Trained and evaluated on a single historical train/test split, not
@@ -148,9 +219,18 @@ as ADRs where noted.
   one-time fit.
 - Free-tier Render hosting means real-world latency includes occasional cold
   starts (see above) — not representative of a production SLA.
-- The support agent (Project 2) doesn't exist yet. The shared-database
-  design above is real and enforced by the schema today, but nothing
-  currently exercises the `agent_actions` side of it end to end.
+- **The support agent has no real authentication.** `CURRENT_CUSTOMER_ID` in
+  `support_agent/src/tools.py` is a hardcoded constant (12346), standing in
+  for a real login. Every scoping guarantee described above is real and
+  tested, but it scopes against that one fixed customer. Real authentication
+  is planned, not built.
+- The support agent's retrieval has a documented gap on some phrasings, for
+  example "return window" ([ADR-010](docs/adr/010-rag-retrieval-limitation.md)).
+- The support agent can describe processes that do not exist. It once told a
+  customer to cancel an order through an account login and order-history page
+  that are not part of this system
+  ([ADR-011](docs/adr/011-agent-hallucinates-unavailable-capabilities.md)).
+  This is documented and slated for an eval case, not fixed.
 
 ## Local setup
 
@@ -219,7 +299,10 @@ retail-intelligence/
 │   ├── app/                  # FastAPI app: routes, schemas, config, serving logic
 │   ├── src/                  # training pipeline: demand, features, split, train, metrics
 │   └── Dockerfile
-├── support-agent/            # Project 2 — not started
+├── support_agent/            # Project 2 — RAG + tool-calling support agent
+│   ├── src/                  # tools, policy chunking
+│   ├── experiments/          # agent loop; test_gate1.py (9 script-based scenarios, not pytest)
+│   └── data/policies/        # policy documents that get chunked and embedded
 ├── shared/                   # SQLAlchemy models + DB session, used by both services
 ├── scripts/                  # ETL and one-off utilities (download, load, results, diagnostics)
 ├── migrations/                # Alembic schema migrations
@@ -228,7 +311,7 @@ retail-intelligence/
 ├── docs/
 │   ├── adr/                  # architecture decision records
 │   └── results.md            # generated forecasting results
-├── tests/                    # 46 tests: metrics, features, split, API, integration
+├── tests/                    # 46 pytest tests: metrics, features, split, API, integration
 ├── docker-compose.yml        # local Postgres + forecasting-service
 └── render.yaml                # Render deployment config
 ```
@@ -240,7 +323,7 @@ retail-intelligence/
 | Python 3.12 + `uv` | fast, reproducible dependency management via a locked `uv.lock` |
 | FastAPI | typed request/response contracts via Pydantic, free `/docs` |
 | LightGBM | pools all products into one model, learns shared seasonal structure that per-product methods (Prophet) can't with only a year of history each |
-| PostgreSQL 16 + pgvector | one relational store for both services, with vector search ready for Project 2's retrieval needs |
+| PostgreSQL 16 + pgvector | one relational store for both services, with vector search in use for Project 2's policy-chunk retrieval (`search_policy`) |
 | SQLAlchemy + Alembic | typed models shared by both services, versioned schema migrations |
 | Docker | identical image locally and on Render, multi-stage build for fast rebuilds |
 | Render | free-tier hosting with a Docker-native deploy path, colocated with the database's region |

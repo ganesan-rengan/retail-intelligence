@@ -4,8 +4,8 @@ Python 3.12, uv, PostgreSQL 16 + pgvector via docker compose, SQLAlchemy, Alembi
 
 ## Structure
 - shared/          — DB models and session, used by both services
-- forecasting-service/src/  — Project 1 (standalone scripts, sys.path.insert pattern)
-- support-agent/   — Project 2 (not started)
+- forecasting_service/src/  — Project 1 (standalone scripts, sys.path.insert pattern)
+- support_agent/   — Project 2 (in progress: RAG + tool-calling agent, Gates 1-4)
 - scripts/         — ETL and one-off utilities
 
 ## Working with me

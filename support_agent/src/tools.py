@@ -6,7 +6,9 @@ customer_id) and search_policy (real cosine-similarity search over
 embedded policy chunks).
 """
 
+import json
 import secrets
+import sys
 from datetime import datetime, timedelta
 
 import httpx
@@ -16,12 +18,43 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from shared.database import get_session
-from shared.models import Order, OrderItem, PendingReturn, PolicyChunk, Return
+from shared.models import AgentAction, Order, OrderItem, PendingReturn, PolicyChunk, Return
 
 # TEMPORARY: stands in for real auth (step 2.21). Once auth exists, the
 # caller's customer_id must come from an authenticated session, never from
 # a module constant.
 CURRENT_CUSTOMER_ID = 12346
+
+
+def _mask_tokens(payload: dict) -> dict:
+    """Copy of payload with any "confirmation_token" value cut to 8 chars.
+    Keyed on the field name, not the tool, so a live token can't reach the
+    audit table in plaintext through whichever tool happens to carry it."""
+    masked = dict(payload)
+    if "confirmation_token" in masked:
+        masked["confirmation_token"] = str(masked["confirmation_token"])[:8] + "..."
+    return masked
+
+
+def log_action(customer_id: int, tool_name: str, arguments: dict, outcome: dict) -> None:
+    """Append one row to agent_actions. Best-effort audit trail: it uses its
+    OWN session (a failure here cannot roll back or poison the tool's
+    transaction) and never raises (a logging failure cannot change what the
+    customer sees). Failures go to stderr. Only the logged copies are masked;
+    the caller's dicts are never mutated."""
+    try:
+        with get_session() as session:
+            session.add(
+                AgentAction(
+                    customer_id=customer_id,
+                    tool_name=tool_name[:60],  # a hallucinated name can exceed String(60)
+                    arguments=json.dumps(_mask_tokens(arguments), default=str),
+                    outcome=json.dumps(_mask_tokens(outcome), default=str),
+                )
+            )
+            session.commit()
+    except Exception as exc:
+        print(f"log_action failed ({type(exc).__name__}: {exc})", file=sys.stderr)
 
 FORECASTING_SERVICE_URL = "https://retail-forecasting-service.onrender.com"
 

@@ -14,6 +14,8 @@ from google import genai
 from google.genai import types
 
 from support_agent.src.tools import (
+    CURRENT_CUSTOMER_ID,
+    log_action,
     get_order_status_for_model,
     order_status_declaration,
     search_policy,
@@ -83,7 +85,8 @@ def dispatch_with_gate(
 
     Returns (name, known, result, proposed_this_turn), where the last
     element is the caller's flag, updated if this call was a successful
-    dispatch of propose_return.
+    dispatch of propose_return. Every path logs one agent_actions row
+    (best-effort, see log_action) right before returning.
     """
     if call.name == "confirm_return" and proposed_this_turn:
         result = {
@@ -94,11 +97,13 @@ def dispatch_with_gate(
                 "proceed is required first."
             )
         }
+        log_action(CURRENT_CUSTOMER_ID, call.name, dict(call.args or {}), result)
         return call.name, True, result, proposed_this_turn
 
     name, known, result = dispatch_call(call)
     if name == "propose_return" and known:
         proposed_this_turn = True
+    log_action(CURRENT_CUSTOMER_ID, name, dict(call.args or {}), result)
     return name, known, result, proposed_this_turn
 
 

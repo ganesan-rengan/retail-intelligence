@@ -189,7 +189,7 @@ it, is in [ADR-013](docs/adr/013-gate1-pending-returns-design.md).
 |---|---|---|
 | 1. Confirmation | No write without a separate confirming turn. `dispatch_with_gate()` refuses `confirm_return` in the same `run_agent()` call as `propose_return`, whatever the model attempts. | `test_gate1.py` scenarios 1-6 exercise the tools directly. Scenario 8 forces the chained attempt with a scripted model and checks the refusal text, that no `returns` row exists, and that the token stays pending. The live-model version (scenario 7) never got the model to attempt the chain, so it proves nothing on its own. |
 | 2. Scoping | Customer-private tools use the server-side customer, never a model-supplied one, and `confirm_return` re-checks ownership rather than trusting the token alone. | Code review of all five tools ([ADR-012](docs/adr/012-gate2-scope-boundary-verified.md)), plus scenario 5: a real token presented by the wrong customer gets the identical answer to an invented token. |
-| 3. Idempotency | A token can be redeemed once: it doubles as `returns.idempotency_key` under the unique constraint `uq_returns_idempotency_key`. | Scenario 4: a second confirm of the same token is refused and exactly one `returns` row exists. |
+| 3. Idempotency | A token can be redeemed once: it doubles as `returns.idempotency_key` under the unique constraint `uq_returns_idempotency_key`. | Scenario 4: a second confirm of the same token is refused and exactly one `returns` row exists. Scenario 10: the same guarantee holds under a genuinely forced concurrent race between two real threads, not just sequential calls. |
 | 4. Audit logging | Every call through `dispatch_with_gate()`, including refusals, writes one `agent_actions` row. `confirmation_token` is masked to 8 characters in the logged arguments and outcome. Logging is best-effort and can never change the tool result. | Scenarios 8 and 9 assert on the real rows. Masking was also deliberately disabled once to confirm the assertions fail (they did), then restored. |
 
 ### Tests
@@ -199,7 +199,7 @@ There are two separate test efforts, not one suite:
 - **46 pytest tests** in `tests/` (metrics, features, split, API,
   integration). These are what CI runs (45 of them; the integration test is
   deselected).
-- **9 script-based scenarios** in `support_agent/experiments/test_gate1.py`,
+- **10 script-based scenarios** in `support_agent/experiments/test_gate1.py`,
   run with `uv run python -m support_agent.experiments.test_gate1`. They run
   against the real database, create and delete their own fixture rows, and
   verify the cleanup. pytest does not collect them and CI does not run them.
@@ -301,7 +301,7 @@ retail-intelligence/
 │   └── Dockerfile
 ├── support_agent/            # Project 2 — RAG + tool-calling support agent
 │   ├── src/                  # tools, policy chunking
-│   ├── experiments/          # agent loop; test_gate1.py (9 script-based scenarios, not pytest)
+│   ├── experiments/          # agent loop; test_gate1.py (10 script-based scenarios, not pytest)
 │   └── data/policies/        # policy documents that get chunked and embedded
 ├── shared/                   # SQLAlchemy models + DB session, used by both services
 ├── scripts/                  # ETL and one-off utilities (download, load, results, diagnostics)

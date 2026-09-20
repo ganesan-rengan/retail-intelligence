@@ -73,8 +73,7 @@ Six checks, of increasing rigor, cover this design:
   proves nothing about the code-level guarantee on its own, since the
   refusal branch was never exercised by it — scenario 8d exists
   specifically because this could not be relied on as proof.
-- **A genuine concurrent race**, forced manually (not currently
-  committed as a repository test — see Remaining Work below): two
+- **A genuine concurrent race**, forced manually: two
   separate `get_session()` objects were opened, both read the same
   `PendingReturn` row with `status='pending'` before either wrote
   (mirroring true concurrent requests, not sequential ones), both
@@ -106,8 +105,13 @@ under conditions stronger than normal sequential use — a mocked
 adversarial loop attempt and a genuinely forced database race — not
 just under happy-path testing.
 
-**Remaining work:** the concurrent-race verification was run as an ad
-hoc script during development and is not currently a committed,
-re-runnable test. It should be added to `test_gate1.py` as a permanent
-scenario so this specific guarantee is re-verified on every run rather
-than resting on a one-time manual check.
+**Concurrent race, now a committed test:** the race verification is
+scenario 10 in `test_gate1.py`, verified stable across 5 consecutive
+runs with no failures at commit 2f3a261. It calls `confirm_return()`
+itself from two real threads, not a hand-replicated approximation of its
+logic. Because `confirm_return()` has no seam between its `SELECT` and
+its commit, a barrier before the call would leave the overlap to timing,
+so a SQLAlchemy engine-event listener makes each thread wait after its
+`pending_returns` read until both have read, forcing a genuine
+read-before-write overlap. The guarantee is now re-verified on every
+run rather than resting on a one-time manual check.

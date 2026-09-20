@@ -4,7 +4,7 @@ graceful handling of invented tool names, and per-iteration token accounting.
 Continues from 02_tool_calling.py's single manual round trip -- this loops
 until the model returns a turn with no function calls, or MAX_ITERATIONS is
 hit. Uses the real tools from support_agent.src.tools: get_order_status,
-search_policy, get_demand_forecast.
+search_policy, get_demand_forecast, propose_return, confirm_return.
 """
 
 import os
@@ -20,6 +20,10 @@ from support_agent.src.tools import (
     search_policy_declaration,
     get_demand_forecast,
     demand_forecast_declaration,
+    propose_return_for_model,
+    propose_return_declaration,
+    confirm_return_for_model,
+    confirm_return_declaration,
 )
 
 load_dotenv()
@@ -33,6 +37,8 @@ TOOLS = {
     "get_order_status": get_order_status_for_model,
     "search_policy": search_policy,
     "get_demand_forecast": get_demand_forecast,
+    "propose_return": propose_return_for_model,
+    "confirm_return": confirm_return_for_model,
 }
 
 
@@ -41,6 +47,8 @@ tools = types.Tool(
         order_status_declaration,
         search_policy_declaration,
         demand_forecast_declaration,
+        propose_return_declaration,
+        confirm_return_declaration,
     ]
 )
 config = types.GenerateContentConfig(tools=[tools], temperature=0)
@@ -61,6 +69,39 @@ def dispatch_call(call: types.FunctionCall) -> tuple[str, bool, dict]:
     return name, known, result
 
 
+def dispatch_with_gate(
+    call: types.FunctionCall, proposed_this_turn: bool
+) -> tuple[str, bool, dict, bool]:
+    """dispatch_call() plus Gate 1's enforcement, as one callable unit.
+
+    Gate 1's actual enforcement point. propose_return_declaration's
+    description asks the model not to chain these in one turn, but a
+    prompt instruction is a request, not a guarantee -- this is what
+    actually stops it if it tries anyway. proposed_this_turn is owned by
+    the caller (one run_agent() invocation), so a genuinely separate,
+    later run_agent() call is never affected by it.
+
+    Returns (name, known, result, proposed_this_turn), where the last
+    element is the caller's flag, updated if this call was a successful
+    dispatch of propose_return.
+    """
+    if call.name == "confirm_return" and proposed_this_turn:
+        result = {
+            "error": (
+                "confirm_return cannot be called in the same "
+                "conversation turn as propose_return. A separate "
+                "message from the customer confirming they want to "
+                "proceed is required first."
+            )
+        }
+        return call.name, True, result, proposed_this_turn
+
+    name, known, result = dispatch_call(call)
+    if name == "propose_return" and known:
+        proposed_this_turn = True
+    return name, known, result, proposed_this_turn
+
+
 def run_agent(
     user_message: str, messages: list[types.Content] | None = None
 ) -> tuple[str, list[types.Content]]:
@@ -79,6 +120,7 @@ def run_agent(
         messages = []
     messages.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
     total_tokens = 0
+    proposed_this_turn = False
 
     for iteration in range(1, MAX_ITERATIONS + 1):
         response = client.models.generate_content(model=MODEL, contents=messages, config=config)
@@ -113,8 +155,12 @@ def run_agent(
 
         response_parts = []
         for call_part in function_calls:
-            name, known, result = dispatch_call(call_part.function_call)
-            args = dict(call_part.function_call.args or {})
+            call = call_part.function_call
+            args = dict(call.args or {})
+
+            name, known, result, proposed_this_turn = dispatch_with_gate(
+                call, proposed_this_turn
+            )
 
             print(f"  tool: {name} [{'KNOWN' if known else 'INVENTED'}]")
             print(f"    args: {args}")

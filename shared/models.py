@@ -148,6 +148,30 @@ class PendingReturn(Base):
     )
 
 
+class CustomerSession(Base):
+    __tablename__ = "customer_sessions"
+
+    session_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # 64 leaves headroom over secrets.token_urlsafe(32)'s 43 characters.
+    session_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.customer_id"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    # Set explicitly in Python at insert (real wall-clock, 60-minute TTL). Expiry is
+    # also checked in Python (row.expires_at > datetime.now()), never with func.now()
+    # in SQL, so one code path owns the whole decision (see ADR-013).
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    # The UNIQUE constraint already creates a btree index, so no index=True here.
+    # No Customer.sessions relationship: the only access path is lookup by token.
+    __table_args__ = (
+        UniqueConstraint("session_token", name="uq_customer_sessions_session_token"),
+    )
+
+
 class AgentAction(Base):
     __tablename__ = "agent_actions"
 

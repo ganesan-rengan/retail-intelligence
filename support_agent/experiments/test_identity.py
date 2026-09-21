@@ -11,10 +11,10 @@ read, so equality can't be reached on the real clock; scenario 6 swaps in a
 frozen clock for identity.datetime to sit exactly on the boundary.
 
 This file deliberately does NOT import tools.py, which loads the embedding
-model at import time. Customer 12346 (tools.CURRENT_CUSTOMER_ID) is
-hardcoded instead, and main() checks that the customer really exists before
-running anything. Importing the constant would be the only reason to load
-tools.py here; a stale hardcode fails loudly at that check instead.
+model at import time, and nothing here needs it. Customer 12346, the
+customer the support agent's test suites use, is hardcoded instead, and
+main() checks that the customer really exists before running anything, so a
+stale hardcode fails loudly at that check.
 
 Every CustomerSession row created (through login() or by direct insert) is
 tracked by token and deleted in a finally block. After cleanup the table is
@@ -31,7 +31,7 @@ from shared.models import Customer, CustomerSession
 from support_agent.src import identity as identity_module
 from support_agent.src.identity import SESSION_TTL_MINUTES, login, resolve_session
 
-TEST_CUSTOMER_ID = 12346  # same value as tools.CURRENT_CUSTOMER_ID; see docstring
+TEST_CUSTOMER_ID = 12346  # see docstring
 MISSING_CUSTOMER_ID = -1
 
 results: list[tuple[str, str, str]] = []  # (scenario, verdict, detail)

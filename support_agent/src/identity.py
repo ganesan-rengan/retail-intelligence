@@ -6,6 +6,8 @@ there. These functions run before a conversation, not during one.
 """
 
 import secrets
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
@@ -14,6 +16,28 @@ from shared.database import get_session
 from shared.models import Customer, CustomerSession
 
 SESSION_TTL_MINUTES = 60
+
+# Who the current conversation belongs to. Set only by as_customer(), which
+# run_agent() enters after resolve_session() succeeds; the *_for_model tool
+# wrappers and dispatch_with_gate read it. None means "no active session".
+# NOTE: a ContextVar set in one thread is NOT visible in threads it starts
+# (verified on 3.12: plain Thread and ThreadPoolExecutor.submit both see
+# None), so a worker that isn't handed the context fails closed with "No
+# active session" instead of acting as the wrong customer. Carrying it
+# across on purpose takes contextvars.copy_context().run(...).
+current_customer_id: ContextVar[int | None] = ContextVar("current_customer_id", default=None)
+
+
+@contextmanager
+def as_customer(customer_id: int):
+    """Run a block as customer_id: set current_customer_id, yield, then reset
+    it to whatever it was before, even if the block raises. The reset is what
+    stops one conversation's identity outliving it on the same thread."""
+    token = current_customer_id.set(customer_id)
+    try:
+        yield
+    finally:
+        current_customer_id.reset(token)
 
 
 def login(customer_id: int) -> dict:

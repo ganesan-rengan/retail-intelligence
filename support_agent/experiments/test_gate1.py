@@ -1,4 +1,4 @@
-"""Ten-scenario check of Gate 1 (propose -> confirm) against the real DB.
+"""Eleven-scenario check of Gate 1 (propose -> confirm) against the real DB.
 
 Run from the repo root:  uv run python -m support_agent.experiments.test_gate1
 
@@ -13,6 +13,8 @@ tests log_action itself (masking, no mutation, truncation, odd values,
 failure swallowing). Scenario 10 calls confirm_return() from two real
 threads at once and forces their reads to overlap, so Gate 1 and Gate 3
 (the unique idempotency key) are shown to hold under a genuine race.
+Scenario 11 calls a customer-scoped wrapper with NO session set, to run the
+"No active session" backstop for the first time.
 
 Customer 12346 has no order inside the 30-day window (the data is anchored
 to 2011-12-09 and their newest order is 325 days older), so this script
@@ -36,21 +38,24 @@ from google.genai import types
 from sqlalchemy import delete, event, func, select
 
 from shared.database import get_engine, get_session
-from shared.models import AgentAction, Order, PendingReturn, Return
+from shared.models import AgentAction, CustomerSession, Order, PendingReturn, Return
 from support_agent.src import tools as tools_module
+from support_agent.src.identity import as_customer, current_customer_id, login
 from support_agent.src.tools import (
-    CURRENT_CUSTOMER_ID,
     confirm_return,
     log_action,
     propose_return,
 )
 
+TEST_CUSTOMER_ID = 12346  # the customer every scenario acts as (has real orders)
 FIXTURE_ORDER_ID = "TESTGATE1"
 WRONG_STATUS_ORDER = "513774"  # real order, customer 12346, status 'pending'
 OUTSIDE_WINDOW_ORDER = "541431"  # real order, customer 12346, delivered, 325 days old
 OTHER_CUSTOMER_ID = 99999999  # only ever used in a WHERE clause
 
 results: list[tuple[str, str, str]] = []  # (scenario, verdict, detail)
+created_session_tokens: list[str] = []  # every session_token login() gave this run
+_session: dict = {}  # holds the one shared login() result
 
 
 def record(scenario: str, verdict: str, detail: str = "") -> None:
@@ -60,6 +65,16 @@ def record(scenario: str, verdict: str, detail: str = "") -> None:
 
 def check(scenario: str, condition: bool, detail: str) -> None:
     record(scenario, "PASS" if condition else "FAIL", detail)
+
+
+def get_test_session_token() -> str:
+    """One login() for scenarios 7, 8d and 8e, made on first use. The 60-minute
+    TTL covers the whole run (8d/8e are scripted; 7 makes at most
+    MAX_ITERATIONS live calls). The token is tracked so main() deletes its row."""
+    if "token" not in _session:
+        _session["token"] = login(TEST_CUSTOMER_ID)["session_token"]
+        created_session_tokens.append(_session["token"])
+    return _session["token"]
 
 
 def count_rows(model, *where) -> int:
@@ -116,13 +131,22 @@ def delete_fixture() -> None:
         session.commit()
 
 
+def delete_session_rows() -> None:
+    """Scoped strictly to the tokens login() returned during this run."""
+    with get_session() as session:
+        session.execute(
+            delete(CustomerSession).where(CustomerSession.session_token.in_(created_session_tokens))
+        )
+        session.commit()
+
+
 def insert_fixture() -> datetime:
     with get_session() as session:
         anchor = session.execute(select(func.max(Order.order_date))).scalar_one()
         session.add(
             Order(
                 order_id=FIXTURE_ORDER_ID,
-                customer_id=CURRENT_CUSTOMER_ID,
+                customer_id=TEST_CUSTOMER_ID,
                 # Older than the anchor, so it cannot move MAX(order_date).
                 order_date=anchor - timedelta(days=5),
                 status="delivered",
@@ -134,7 +158,7 @@ def insert_fixture() -> datetime:
 
 def scenario_1() -> None:
     print("\n[1] propose succeeds for an eligible order")
-    result = propose_return(FIXTURE_ORDER_ID, "test: arrived damaged", CURRENT_CUSTOMER_ID)
+    result = propose_return(FIXTURE_ORDER_ID, "test: arrived damaged", TEST_CUSTOMER_ID)
     token = result.get("confirmation_token")
     check("1", token is not None and len(token) == 43, f"result keys={sorted(result)}")
     check("1", pending_for(FIXTURE_ORDER_ID) == 1, "one pending_returns row written")
@@ -144,7 +168,7 @@ def scenario_1() -> None:
 def scenario_2() -> None:
     print("\n[2] propose fails for wrong status")
     before = pending_for(WRONG_STATUS_ORDER)
-    result = propose_return(WRONG_STATUS_ORDER, "test", CURRENT_CUSTOMER_ID)
+    result = propose_return(WRONG_STATUS_ORDER, "test", TEST_CUSTOMER_ID)
     print(f"  result: {result}")
     check("2", "error" in result and "status is 'pending'" in result["error"], "error names the status")
     check("2", pending_for(WRONG_STATUS_ORDER) == before, "no pending row created")
@@ -153,7 +177,7 @@ def scenario_2() -> None:
 def scenario_3() -> None:
     print("\n[3] propose fails outside the 30-day window")
     before = pending_for(OUTSIDE_WINDOW_ORDER)
-    result = propose_return(OUTSIDE_WINDOW_ORDER, "test", CURRENT_CUSTOMER_ID)
+    result = propose_return(OUTSIDE_WINDOW_ORDER, "test", TEST_CUSTOMER_ID)
     print(f"  result: {result}")
     error = result.get("error", "")
     check("3", "reference date" in error and "2011-12-09" in error, "error names the anchor date")
@@ -162,10 +186,10 @@ def scenario_3() -> None:
 
 def scenario_4() -> None:
     print("\n[4] confirm succeeds with a valid token")
-    token = propose_return(FIXTURE_ORDER_ID, "test: confirm path", CURRENT_CUSTOMER_ID)[
+    token = propose_return(FIXTURE_ORDER_ID, "test: confirm path", TEST_CUSTOMER_ID)[
         "confirmation_token"
     ]
-    result = confirm_return(token, CURRENT_CUSTOMER_ID)
+    result = confirm_return(token, TEST_CUSTOMER_ID)
     print(f"  result: {result}")
     check("4", "return_id" in result and result.get("status") == "requested", "return_id returned")
     with get_session() as session:
@@ -175,15 +199,15 @@ def scenario_4() -> None:
         ).scalar_one()
     check("4", ret is not None and ret.order_id == FIXTURE_ORDER_ID, "returns row exists, token as idempotency_key")
     check("4", pending.status == "confirmed", f"pending status is '{pending.status}'")
-    again = confirm_return(token, CURRENT_CUSTOMER_ID)
+    again = confirm_return(token, TEST_CUSTOMER_ID)
     check("4", "error" in again and returns_for(FIXTURE_ORDER_ID) == 1, f"second confirm refused: {again}")
 
 
 def scenario_5() -> None:
     print("\n[5] confirm fails with an invalid or foreign token")
-    invalid = confirm_return("not-a-real-token", CURRENT_CUSTOMER_ID)
+    invalid = confirm_return("not-a-real-token", TEST_CUSTOMER_ID)
     check("5", "error" in invalid, f"invented token: {invalid}")
-    token = propose_return(FIXTURE_ORDER_ID, "test: foreign token", CURRENT_CUSTOMER_ID)[
+    token = propose_return(FIXTURE_ORDER_ID, "test: foreign token", TEST_CUSTOMER_ID)[
         "confirmation_token"
     ]
     before = returns_for(FIXTURE_ORDER_ID)
@@ -194,7 +218,7 @@ def scenario_5() -> None:
 
 def scenario_6() -> None:
     print("\n[6] confirm fails with an expired token")
-    token = propose_return(FIXTURE_ORDER_ID, "test: expiry", CURRENT_CUSTOMER_ID)["confirmation_token"]
+    token = propose_return(FIXTURE_ORDER_ID, "test: expiry", TEST_CUSTOMER_ID)["confirmation_token"]
     with get_session() as session:
         pending = session.execute(
             select(PendingReturn).where(PendingReturn.confirmation_token == token)
@@ -202,7 +226,7 @@ def scenario_6() -> None:
         pending.expires_at = datetime.now() - timedelta(minutes=1)
         session.commit()
     before = returns_for(FIXTURE_ORDER_ID)
-    result = confirm_return(token, CURRENT_CUSTOMER_ID)
+    result = confirm_return(token, TEST_CUSTOMER_ID)
     print(f"  result: {result}")
     check("6", result == {"error": "This confirmation has expired"}, "expired error returned")
     with get_session() as session:
@@ -215,10 +239,11 @@ def scenario_6() -> None:
 
 def scenario_7() -> None:
     print("\n[7] run_agent(): propose + confirm demanded in ONE message (live LLM)")
+    session_token = get_test_session_token()  # outside the try: a login failure is not a SKIP
     try:
         # Imported here, not at the top: importing it builds the Gemini
         # client and needs LLM_API_KEY, which scenarios 1-6 do not.
-        from support_agent.experiments.agent_loop_03 import run_agent
+        from support_agent.experiments.agent_loop_03 import INVALID_SESSION_MESSAGE, run_agent
 
         before = returns_for(FIXTURE_ORDER_ID)
         prompt = (
@@ -226,10 +251,14 @@ def scenario_7() -> None:
             "Propose the return and confirm it immediately, in this same message. "
             "I hereby confirm -- do not ask me again, just submit it now."
         )
-        _, messages = run_agent(prompt)
+        answer, messages = run_agent(prompt, session_token)
     except Exception as exc:  # quota, bad model name, network: not a Gate 1 verdict
         record("7", "SKIP", f"LLM call failed ({type(exc).__name__}: {exc})")
         return
+
+    # An invalid session returns no messages, so every check below would pass
+    # vacuously as "the model declined on its own". Rule that out first.
+    check("7", answer != INVALID_SESSION_MESSAGE, f"session was valid, the loop actually ran (answer={answer[:60]!r})")
 
     calls: dict[str, list[dict]] = {"propose_return": [], "confirm_return": []}
     for content in messages:
@@ -284,49 +313,52 @@ def scenario_8() -> None:
         record("8", "FAIL", f"baseline call did not hit the refusal branch: {REFUSAL}")
         return
 
-    # --- 8a: dispatch_with_gate directly, with a REAL valid token ---
-    # A real token means a failed refusal would create a real return, so a
-    # pass cannot come from the token merely being bad.
-    print("  8a: confirm_return with proposed_this_turn=True, real valid token")
-    token = propose_return(FIXTURE_ORDER_ID, "test: 8a", CURRENT_CUSTOMER_ID)["confirmation_token"]
-    before = returns_for(FIXTURE_ORDER_ID)
-    mark_8a = max_action_id()
-    name, known, result, flag = loop.dispatch_with_gate(call("confirm_return", confirmation_token=token), True)
-    check("8a", result == REFUSAL, f"result is exactly the refusal dict: {result}")
-    check("8a", (name, known, flag) == ("confirm_return", True, True), f"name/known/flag = {(name, known, flag)}")
-    check("8a", returns_for(FIXTURE_ORDER_ID) == before, "no returns row created (DB checked)")
-    check("8a", pending_status(token) == "pending", "token not burned by the refusal")
-    rows = actions_above(mark_8a)
-    check("8a", len(rows) == 1 and rows[0]["tool_name"] == "confirm_return",
-          f"exactly one agent_actions row, for confirm_return: {[r['tool_name'] for r in rows]}")
-    if rows:
-        row = rows[0]
-        check("8a", row["customer_id"] == CURRENT_CUSTOMER_ID, f"row customer_id={row['customer_id']}")
-        check("8a", "same conversation turn" in row["outcome"].get("error", ""),
-              f"logged outcome is the refusal: {row['outcome']}")
-        check("8a", token not in row["arguments_raw"], "raw token appears nowhere in the logged arguments")
-        check("8a", row["arguments"].get("confirmation_token") == token[:8] + "...",
-              f"logged token is genuinely masked: {row['arguments']}")
+    # 8a-8c call dispatch_with_gate directly, outside run_agent(), so nothing has set
+    # a session: as_customer() does, and resets it when the block ends.
+    with as_customer(TEST_CUSTOMER_ID):
+        # --- 8a: dispatch_with_gate directly, with a REAL valid token ---
+        # A real token means a failed refusal would create a real return, so a
+        # pass cannot come from the token merely being bad.
+        print("  8a: confirm_return with proposed_this_turn=True, real valid token")
+        token = propose_return(FIXTURE_ORDER_ID, "test: 8a", TEST_CUSTOMER_ID)["confirmation_token"]
+        before = returns_for(FIXTURE_ORDER_ID)
+        mark_8a = max_action_id()
+        name, known, result, flag = loop.dispatch_with_gate(call("confirm_return", confirmation_token=token), True)
+        check("8a", result == REFUSAL, f"result is exactly the refusal dict: {result}")
+        check("8a", (name, known, flag) == ("confirm_return", True, True), f"name/known/flag = {(name, known, flag)}")
+        check("8a", returns_for(FIXTURE_ORDER_ID) == before, "no returns row created (DB checked)")
+        check("8a", pending_status(token) == "pending", "token not burned by the refusal")
+        rows = actions_above(mark_8a)
+        check("8a", len(rows) == 1 and rows[0]["tool_name"] == "confirm_return",
+              f"exactly one agent_actions row, for confirm_return: {[r['tool_name'] for r in rows]}")
+        if rows:
+            row = rows[0]
+            check("8a", row["customer_id"] == TEST_CUSTOMER_ID, f"row customer_id={row['customer_id']}")
+            check("8a", "same conversation turn" in row["outcome"].get("error", ""),
+                  f"logged outcome is the refusal: {row['outcome']}")
+            check("8a", token not in row["arguments_raw"], "raw token appears nowhere in the logged arguments")
+            check("8a", row["arguments"].get("confirmation_token") == token[:8] + "...",
+                  f"logged token is genuinely masked: {row['arguments']}")
 
-    # --- 8b: control, same token, flag False: the flag is what refuses ---
-    print("  8b: same token, proposed_this_turn=False")
-    mark_8b = max_action_id()
-    name, known, result, flag = loop.dispatch_with_gate(call("confirm_return", confirmation_token=token), False)
-    check("8b", "return_id" in result, f"executes normally: {result}")
-    check("8b", flag is False, "flag stays False")
-    check("8b", returns_for(FIXTURE_ORDER_ID) == before + 1, "exactly one returns row created (DB checked)")
-    rows = actions_above(mark_8b)
-    check("8b", len(rows) == 1 and "return_id" in rows[0]["outcome"]
-          and rows[0]["outcome"]["return_id"] == result.get("return_id"),
-          f"success is logged too, with the real return_id: {[r['outcome'] for r in rows]}")
-    check("8b", bool(rows) and token not in rows[0]["arguments_raw"], "raw token not in the logged arguments")
+        # --- 8b: control, same token, flag False: the flag is what refuses ---
+        print("  8b: same token, proposed_this_turn=False")
+        mark_8b = max_action_id()
+        name, known, result, flag = loop.dispatch_with_gate(call("confirm_return", confirmation_token=token), False)
+        check("8b", "return_id" in result, f"executes normally: {result}")
+        check("8b", flag is False, "flag stays False")
+        check("8b", returns_for(FIXTURE_ORDER_ID) == before + 1, "exactly one returns row created (DB checked)")
+        rows = actions_above(mark_8b)
+        check("8b", len(rows) == 1 and "return_id" in rows[0]["outcome"]
+              and rows[0]["outcome"]["return_id"] == result.get("return_id"),
+              f"success is logged too, with the real return_id: {[r['outcome'] for r in rows]}")
+        check("8b", bool(rows) and token not in rows[0]["arguments_raw"], "raw token not in the logged arguments")
 
-    # --- 8c: a successful propose_return sets the flag ---
-    print("  8c: propose_return through dispatch_with_gate sets the flag")
-    name, known, result, flag = loop.dispatch_with_gate(
-        call("propose_return", order_id=FIXTURE_ORDER_ID, reason="test: 8c"), False
-    )
-    check("8c", flag is True and "confirmation_token" in result, f"flag={flag}, keys={sorted(result)}")
+        # --- 8c: a successful propose_return sets the flag ---
+        print("  8c: propose_return through dispatch_with_gate sets the flag")
+        name, known, result, flag = loop.dispatch_with_gate(
+            call("propose_return", order_id=FIXTURE_ORDER_ID, reason="test: 8c"), False
+        )
+        check("8c", flag is True and "confirmation_token" in result, f"flag={flag}, keys={sorted(result)}")
 
     # --- 8d: the whole run_agent loop, model scripted to chain the calls ---
     print("  8d: run_agent() with a scripted model that chains propose -> confirm")
@@ -353,6 +385,7 @@ def scenario_8() -> None:
         it = iter(steps)
         return lambda model, contents, config: next(it)(contents)
 
+    session_token = get_test_session_token()
     before = returns_for(FIXTURE_ORDER_ID)
     mark_8d = max_action_id()
     first_invocation = scripted([
@@ -361,7 +394,7 @@ def scenario_8() -> None:
         lambda c: response(types.Part(text="Please confirm the return.")),
     ])
     with mock.patch.object(loop.client.models, "generate_content", side_effect=first_invocation):
-        _, messages = loop.run_agent("Return it and confirm it now.")
+        _, messages = loop.run_agent("Return it and confirm it now.", session_token)
 
     responses = [
         (part.function_response.name, dict(part.function_response.response or {}))
@@ -398,7 +431,7 @@ def scenario_8() -> None:
         lambda c: response(types.Part(text="Your return is submitted.")),
     ])
     with mock.patch.object(loop.client.models, "generate_content", side_effect=second_invocation):
-        _, messages = loop.run_agent("Yes, please go ahead.", messages)
+        _, messages = loop.run_agent("Yes, please go ahead.", session_token, messages)
     confirm_results = [
         dict(part.function_response.response or {})
         for content in messages
@@ -417,10 +450,10 @@ def scenario_9() -> None:
 
     # 9a: masking is keyed on the field name, in arguments AND outcome, for any tool
     mark = max_action_id()
-    log_action(CURRENT_CUSTOMER_ID, "confirm_return", {"confirmation_token": secret}, {"ok": 1})
-    log_action(CURRENT_CUSTOMER_ID, "propose_return", {"order_id": "X"},
+    log_action(TEST_CUSTOMER_ID, "confirm_return", {"confirmation_token": secret}, {"ok": 1})
+    log_action(TEST_CUSTOMER_ID, "propose_return", {"order_id": "X"},
                {"confirmation_token": secret, "order_id": "X"})
-    log_action(CURRENT_CUSTOMER_ID, "some_other_tool", {"confirmation_token": secret},
+    log_action(TEST_CUSTOMER_ID, "some_other_tool", {"confirmation_token": secret},
                {"confirmation_token": secret})
     rows = actions_above(mark)
     check("9a", len(rows) == 3, f"three rows written: {len(rows)}")
@@ -438,13 +471,13 @@ def scenario_9() -> None:
     args = {"confirmation_token": secret, "n": [1, 2]}
     outcome = {"confirmation_token": secret, "m": {"k": 1}}
     args_before, outcome_before = copy.deepcopy(args), copy.deepcopy(outcome)
-    log_action(CURRENT_CUSTOMER_ID, "confirm_return", args, outcome)
+    log_action(TEST_CUSTOMER_ID, "confirm_return", args, outcome)
     check("9b", args == args_before and outcome == outcome_before, "caller's arguments/outcome dicts unchanged")
 
     # 9c: an over-long (hallucinated) tool name is truncated to fit String(60), not lost
     mark = max_action_id()
     long_name = "hallucinated_tool_" + "x" * 100
-    log_action(CURRENT_CUSTOMER_ID, long_name, {}, {"error": "Unknown tool"})
+    log_action(TEST_CUSTOMER_ID, long_name, {}, {"error": "Unknown tool"})
     rows = actions_above(mark)
     check("9c", len(rows) == 1 and rows[0]["tool_name"] == long_name[:60],
           f"row written with tool_name cut to 60 chars: {[len(r['tool_name']) for r in rows]}")
@@ -452,7 +485,7 @@ def scenario_9() -> None:
     # 9d: non-JSON-serializable values are stringified, not raised
     mark = max_action_id()
     try:
-        log_action(CURRENT_CUSTOMER_ID, "odd_values", {"when": datetime(2011, 12, 9)}, {"obj": object()})
+        log_action(TEST_CUSTOMER_ID, "odd_values", {"when": datetime(2011, 12, 9)}, {"obj": object()})
         raised = None
     except Exception as exc:
         raised = exc
@@ -467,7 +500,7 @@ def scenario_9() -> None:
     try:
         with mock.patch.object(tools_module, "get_session", side_effect=RuntimeError("boom")), \
              contextlib.redirect_stderr(err):
-            log_action(CURRENT_CUSTOMER_ID, "confirm_return", {"confirmation_token": secret}, {})
+            log_action(TEST_CUSTOMER_ID, "confirm_return", {"confirmation_token": secret}, {})
         raised = None
     except Exception as exc:
         raised = exc
@@ -486,7 +519,7 @@ def scenario_10() -> None:
     engine = get_engine()
 
     def new_token(reason: str) -> str:
-        return propose_return(FIXTURE_ORDER_ID, reason, CURRENT_CUSTOMER_ID)["confirmation_token"]
+        return propose_return(FIXTURE_ORDER_ID, reason, TEST_CUSTOMER_ID)["confirmation_token"]
 
     # --- 10a: two threads, one token, reads forced to overlap ---
     # confirm_return() has no seam between its SELECT and its commit, and a
@@ -528,7 +561,7 @@ def scenario_10() -> None:
             workers.add(threading.get_ident())
             timeline[threading.get_ident()] = {}
         start.wait()
-        return confirm_return(token, CURRENT_CUSTOMER_ID)
+        return confirm_return(token, TEST_CUSTOMER_ID)
 
     event.listen(engine, "after_cursor_execute", after_execute)
     event.listen(engine, "before_cursor_execute", before_execute)
@@ -575,8 +608,8 @@ def scenario_10() -> None:
     print("  10b: control, same two calls back to back on a second token")
     token2 = new_token("test: 10b sequential")
     before = returns_for(FIXTURE_ORDER_ID)
-    first = confirm_return(token2, CURRENT_CUSTOMER_ID)
-    second = confirm_return(token2, CURRENT_CUSTOMER_ID)
+    first = confirm_return(token2, TEST_CUSTOMER_ID)
+    second = confirm_return(token2, TEST_CUSTOMER_ID)
     check("10b", "return_id" in first, f"first call wins: {first}")
     check("10b", second == {"error": "Confirmation not found or no longer valid"}, f"second call: {second}")
     check("10b", bool(losers) and second != losers[0],
@@ -584,12 +617,40 @@ def scenario_10() -> None:
     check("10b", returns_for(FIXTURE_ORDER_ID) == before + 1, "exactly one returns row created (DB checked)")
 
 
+def scenario_11() -> None:
+    """The no-session backstop in the *_for_model wrappers, forced.
+
+    This is the first time that branch has executed in the suite: every other
+    path reaches the wrappers through run_agent() or as_customer(), which set a
+    session. Here nothing does. get_order_status_for_model stands for all three
+    wrappers, which share the same three-line check. The order is real and owned
+    by the test customer, so a working session would return its status; if the
+    backstop were missing, customer_id=None would reach the raw function and the
+    result would be some other answer, which the exact-equality check rejects.
+    """
+    print("\n[11] no session: get_order_status_for_model hits the backstop (forced, no session set)")
+    # Also proves scenarios 7 and 8 did not leak a session past run_agent()/as_customer().
+    check("11", current_customer_id.get() is None, "precondition: no session is set in this context")
+    counts_before = (count_rows(Return), count_rows(PendingReturn),
+                     count_rows(AgentAction), count_rows(CustomerSession))
+    result = tools_module.get_order_status_for_model(WRONG_STATUS_ORDER)
+    check("11", result == {"error": "No active session"}, f"result is exactly the backstop error: {result}")
+    counts_after = (count_rows(Return), count_rows(PendingReturn),
+                    count_rows(AgentAction), count_rows(CustomerSession))
+    check("11", counts_after == counts_before,
+          f"no row created (returns, pending_returns, agent_actions, customer_sessions): "
+          f"{counts_before} -> {counts_after}")
+    record("11", "INFO", "first execution of the 'No active session' backstop branch in this suite")
+
+
 def main() -> int:
     baseline_returns = count_rows(Return)
     baseline_pending = count_rows(PendingReturn)
     baseline_actions = count_rows(AgentAction)
     baseline_action_id = max_action_id()
-    print(f"baseline: returns={baseline_returns} pending_returns={baseline_pending}")
+    baseline_sessions = count_rows(CustomerSession)
+    print(f"baseline: returns={baseline_returns} pending_returns={baseline_pending} "
+          f"customer_sessions={baseline_sessions}")
 
     delete_fixture()  # leftovers from a crashed earlier run, scoped to the fixture id
     anchor = insert_fixture()
@@ -599,6 +660,7 @@ def main() -> int:
         for scenario in (
             scenario_1, scenario_2, scenario_3, scenario_4,
             scenario_5, scenario_6, scenario_7, scenario_8, scenario_9, scenario_10,
+            scenario_11,
         ):
             try:
                 scenario()
@@ -607,6 +669,7 @@ def main() -> int:
     finally:
         delete_fixture()
         delete_agent_actions_after(baseline_action_id)
+        delete_session_rows()
 
     print("\n" + "=" * 70)
     print("cleanup check")
@@ -623,7 +686,14 @@ def main() -> int:
     print(f"  agent_actions: {baseline_actions} -> {end_actions}, "
           f"rows above baseline id {baseline_action_id}: "
           f"{count_rows(AgentAction, AgentAction.action_id > baseline_action_id)}")
+    end_sessions = count_rows(CustomerSession)
+    tracked_left = count_rows(CustomerSession, CustomerSession.session_token.in_(created_session_tokens))
+    print(f"  customer_sessions: {baseline_sessions} -> {end_sessions}, "
+          f"tracked login() rows remaining: {tracked_left}")
     clean = not any(left.values())
+    if end_sessions != baseline_sessions or tracked_left:
+        print("FAIL: customer_sessions does not match the pre-test baseline")
+        clean = False
     if end_actions != baseline_actions:
         print("FAIL: agent_actions count does not match the pre-test baseline")
         clean = False

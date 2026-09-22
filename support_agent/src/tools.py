@@ -19,11 +19,7 @@ from sqlalchemy.exc import IntegrityError
 
 from shared.database import get_session
 from shared.models import AgentAction, Order, OrderItem, PendingReturn, PolicyChunk, Return
-
-# TEMPORARY: stands in for real auth (step 2.21). Once auth exists, the
-# caller's customer_id must come from an authenticated session, never from
-# a module constant.
-CURRENT_CUSTOMER_ID = 12346
+from support_agent.src.identity import current_customer_id
 
 
 def _mask_tokens(payload: dict) -> dict:
@@ -36,7 +32,7 @@ def _mask_tokens(payload: dict) -> dict:
     return masked
 
 
-def log_action(customer_id: int, tool_name: str, arguments: dict, outcome: dict) -> None:
+def log_action(customer_id: int | None, tool_name: str, arguments: dict, outcome: dict) -> None:
     """Append one row to agent_actions. Best-effort audit trail: it uses its
     OWN session (a failure here cannot roll back or poison the tool's
     transaction) and never raises (a logging failure cannot change what the
@@ -125,11 +121,21 @@ def get_order_status(order_id: str, customer_id: int) -> dict:
 
 
 def get_order_status_for_model(order_id: str) -> dict:
-    """Wrapper actually registered as a tool. Binds CURRENT_CUSTOMER_ID so
-    there is no code path where the model's output could reach
-    customer_id -- the model never sees that parameter and never supplies
-    it."""
-    return get_order_status(order_id, CURRENT_CUSTOMER_ID)
+    """Wrapper actually registered as a tool. Binds customer_id from the
+    session (current_customer_id) so there is no code path where the model's
+    output could reach customer_id -- the model never sees that parameter
+    and never supplies it.
+
+    The None check is a structural backstop, not dead code. run_agent() is
+    the only intended entry point and always sets the session first, but
+    "shouldn't happen" is an assumption, and the alternative to checking is
+    calling the raw function with customer_id=None, which turns a missing
+    session into a query that quietly matches nothing instead of an error.
+    Also what a worker thread sees, since context doesn't cross threads."""
+    customer_id = current_customer_id.get()
+    if customer_id is None:
+        return {"error": "No active session"}
+    return get_order_status(order_id, customer_id)
 
 
 def search_policy(question: str) -> dict:
@@ -290,9 +296,12 @@ def propose_return(order_id: str, reason: str, customer_id: int) -> dict:
 
 
 def propose_return_for_model(order_id: str, reason: str) -> dict:
-    """Registered wrapper: binds CURRENT_CUSTOMER_ID, same as
-    get_order_status_for_model."""
-    return propose_return(order_id, reason, CURRENT_CUSTOMER_ID)
+    """Registered wrapper: binds customer_id from the session, with the same
+    no-session backstop as get_order_status_for_model."""
+    customer_id = current_customer_id.get()
+    if customer_id is None:
+        return {"error": "No active session"}
+    return propose_return(order_id, reason, customer_id)
 
 
 def confirm_return(confirmation_token: str, customer_id: int) -> dict:
@@ -353,8 +362,12 @@ def confirm_return(confirmation_token: str, customer_id: int) -> dict:
 
 
 def confirm_return_for_model(confirmation_token: str) -> dict:
-    """Registered wrapper: binds CURRENT_CUSTOMER_ID."""
-    return confirm_return(confirmation_token, CURRENT_CUSTOMER_ID)
+    """Registered wrapper: binds customer_id from the session, with the same
+    no-session backstop as get_order_status_for_model."""
+    customer_id = current_customer_id.get()
+    if customer_id is None:
+        return {"error": "No active session"}
+    return confirm_return(confirmation_token, customer_id)
 
 
 TOOLS = {

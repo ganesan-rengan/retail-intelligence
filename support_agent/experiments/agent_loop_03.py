@@ -13,8 +13,8 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
+from support_agent.src.identity import as_customer, current_customer_id, login, resolve_session
 from support_agent.src.tools import (
-    CURRENT_CUSTOMER_ID,
     log_action,
     get_order_status_for_model,
     order_status_declaration,
@@ -33,6 +33,7 @@ client = genai.Client(api_key=os.environ["LLM_API_KEY"])
 MODEL = "gemini-3.5-flash-lite"
 
 MAX_ITERATIONS = 5
+INVALID_SESSION_MESSAGE = "Session invalid or expired."
 
 
 TOOLS = {
@@ -86,7 +87,10 @@ def dispatch_with_gate(
     Returns (name, known, result, proposed_this_turn), where the last
     element is the caller's flag, updated if this call was a successful
     dispatch of propose_return. Every path logs one agent_actions row
-    (best-effort, see log_action) right before returning.
+    (best-effort, see log_action) right before returning. The row's
+    customer_id is the session's (current_customer_id); outside a session it
+    is None, which agent_actions.customer_id (nullable, no FK) allows, so an
+    unattributed action is recorded as such rather than dropped or guessed.
     """
     if call.name == "confirm_return" and proposed_this_turn:
         result = {
@@ -97,21 +101,30 @@ def dispatch_with_gate(
                 "proceed is required first."
             )
         }
-        log_action(CURRENT_CUSTOMER_ID, call.name, dict(call.args or {}), result)
+        log_action(current_customer_id.get(), call.name, dict(call.args or {}), result)
         return call.name, True, result, proposed_this_turn
 
     name, known, result = dispatch_call(call)
     if name == "propose_return" and known:
         proposed_this_turn = True
-    log_action(CURRENT_CUSTOMER_ID, name, dict(call.args or {}), result)
+    log_action(current_customer_id.get(), name, dict(call.args or {}), result)
     return name, known, result, proposed_this_turn
 
 
 def run_agent(
-    user_message: str, messages: list[types.Content] | None = None
+    user_message: str, session_token: str, messages: list[types.Content] | None = None
 ) -> tuple[str, list[types.Content]]:
     """Loop the model against the tool registry until it returns a turn with
     no function calls, or MAX_ITERATIONS is hit.
+
+    session_token comes from identity.login(), which runs once BEFORE any
+    conversation (it is not a tool). It is resolved here first: an invalid
+    or expired token returns INVALID_SESSION_MESSAGE at once, with no model
+    call and no tool dispatch. A valid one becomes the conversation's
+    customer_id for the whole loop (as_customer), and is reset when the loop
+    ends. The session is resolved once, at the start of each run_agent()
+    call; a session that expires mid-call is not re-checked until the NEXT
+    call.
 
     messages is the caller's held conversation history, not any state
     run_agent() keeps itself. Omitted (None), this starts a fresh
@@ -123,6 +136,17 @@ def run_agent(
     """
     if messages is None:
         messages = []
+    customer_id = resolve_session(session_token)
+    if customer_id is None:
+        return INVALID_SESSION_MESSAGE, messages
+    with as_customer(customer_id):
+        return _run_loop(user_message, messages)
+
+
+def _run_loop(user_message: str, messages: list[types.Content]) -> tuple[str, list[types.Content]]:
+    """run_agent()'s loop, split out so the as_customer() block wraps it
+    without re-indenting it. Only run_agent() calls this, after validating
+    the session."""
     messages.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
     total_tokens = 0
     proposed_this_turn = False
@@ -205,6 +229,12 @@ def test_unknown_tool_dispatch() -> None:
 if __name__ == "__main__":
     test_unknown_tool_dispatch()
 
+    # Stands in for a real login flow, the way CURRENT_CUSTOMER_ID stood in for
+    # one before it: login() happens once, here, before any conversation. Each
+    # run leaves one row in customer_sessions (it expires on its own).
+    DEMO_CUSTOMER_ID = 12346
+    session_token = login(DEMO_CUSTOMER_ID)["session_token"]
+
     for message in [
         "Is order 491725 shipped, and what is your return window?",
         "Can you make an exception and let me return something 45 days late?",
@@ -213,7 +243,7 @@ if __name__ == "__main__":
         print("=" * 70)
         print(f"USER: {message}")
         print("=" * 70)
-        answer, _ = run_agent(message)
+        answer, _ = run_agent(message, session_token)
         print()
         print(f"FINAL ANSWER: {answer}")
         print()

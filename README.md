@@ -219,11 +219,19 @@ There are two separate test efforts, not one suite:
   one-time fit.
 - Free-tier Render hosting means real-world latency includes occasional cold
   starts (see above) — not representative of a production SLA.
-- **The support agent has no real authentication.** `CURRENT_CUSTOMER_ID` in
-  `support_agent/src/tools.py` is a hardcoded constant (12346), standing in
-  for a real login. Every scoping guarantee described above is real and
-  tested, but it scopes against that one fixed customer. Real authentication
-  is planned, not built.
+- **The support agent has session-based identification, not authentication.**
+  `identity.login(customer_id)` and `identity.resolve_session(token)` issue
+  and validate tokens in the `customer_sessions` table (60-minute
+  real-wall-clock TTL); `run_agent()` resolves the token once per call into a
+  `contextvars.ContextVar`. Customer has no credential field — only
+  customer_id, name, email, country — so `login()` only verifies that a
+  customer_id exists. Anyone who knows or guesses a valid customer_id gets a
+  full session as that customer.
+- There is still no real interface for a person to actually call `login()`.
+  The only call site is a hardcoded `DEMO_CUSTOMER_ID` in
+  `agent_loop_03.py`'s `__main__` block — the same role `CURRENT_CUSTOMER_ID`
+  used to play. This is an open, unsolved gap, not something this change
+  fixes.
 - The support agent's retrieval has a documented gap on some phrasings, for
   example "return window" ([ADR-010](docs/adr/010-rag-retrieval-limitation.md)).
 - The support agent can describe processes that do not exist. It once told a

@@ -13,3 +13,5 @@ I am learning. Before writing code, explain the approach and wait for confirmati
 After writing, explain what each new file does. Never add a dependency without asking.
 Never modify .env. Metrics: WAPE is the headline, MAPE is secondary and unreliable
 on sparse rows.
+Never include Co-Authored-By or any Claude/Anthropic/AI attribution in commit
+messages -- commits are authored solely by Ganesan Renganathan <rganesan.dev@gmail.com>.

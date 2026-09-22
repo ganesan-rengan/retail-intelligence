@@ -1,4 +1,4 @@
-"""Ten-scenario check of Gate 1 (propose -> confirm) against the real DB.
+"""Eleven-scenario check of Gate 1 (propose -> confirm) against the real DB.
 
 Run from the repo root:  uv run python -m support_agent.experiments.test_gate1
 
@@ -13,6 +13,8 @@ tests log_action itself (masking, no mutation, truncation, odd values,
 failure swallowing). Scenario 10 calls confirm_return() from two real
 threads at once and forces their reads to overlap, so Gate 1 and Gate 3
 (the unique idempotency key) are shown to hold under a genuine race.
+Scenario 11 calls a customer-scoped wrapper with NO session set, to run the
+"No active session" backstop for the first time.
 
 Customer 12346 has no order inside the 30-day window (the data is anchored
 to 2011-12-09 and their newest order is 325 days older), so this script
@@ -38,7 +40,7 @@ from sqlalchemy import delete, event, func, select
 from shared.database import get_engine, get_session
 from shared.models import AgentAction, CustomerSession, Order, PendingReturn, Return
 from support_agent.src import tools as tools_module
-from support_agent.src.identity import as_customer, login
+from support_agent.src.identity import as_customer, current_customer_id, login
 from support_agent.src.tools import (
     confirm_return,
     log_action,
@@ -615,6 +617,32 @@ def scenario_10() -> None:
     check("10b", returns_for(FIXTURE_ORDER_ID) == before + 1, "exactly one returns row created (DB checked)")
 
 
+def scenario_11() -> None:
+    """The no-session backstop in the *_for_model wrappers, forced.
+
+    This is the first time that branch has executed in the suite: every other
+    path reaches the wrappers through run_agent() or as_customer(), which set a
+    session. Here nothing does. get_order_status_for_model stands for all three
+    wrappers, which share the same three-line check. The order is real and owned
+    by the test customer, so a working session would return its status; if the
+    backstop were missing, customer_id=None would reach the raw function and the
+    result would be some other answer, which the exact-equality check rejects.
+    """
+    print("\n[11] no session: get_order_status_for_model hits the backstop (forced, no session set)")
+    # Also proves scenarios 7 and 8 did not leak a session past run_agent()/as_customer().
+    check("11", current_customer_id.get() is None, "precondition: no session is set in this context")
+    counts_before = (count_rows(Return), count_rows(PendingReturn),
+                     count_rows(AgentAction), count_rows(CustomerSession))
+    result = tools_module.get_order_status_for_model(WRONG_STATUS_ORDER)
+    check("11", result == {"error": "No active session"}, f"result is exactly the backstop error: {result}")
+    counts_after = (count_rows(Return), count_rows(PendingReturn),
+                    count_rows(AgentAction), count_rows(CustomerSession))
+    check("11", counts_after == counts_before,
+          f"no row created (returns, pending_returns, agent_actions, customer_sessions): "
+          f"{counts_before} -> {counts_after}")
+    record("11", "INFO", "first execution of the 'No active session' backstop branch in this suite")
+
+
 def main() -> int:
     baseline_returns = count_rows(Return)
     baseline_pending = count_rows(PendingReturn)
@@ -632,6 +660,7 @@ def main() -> int:
         for scenario in (
             scenario_1, scenario_2, scenario_3, scenario_4,
             scenario_5, scenario_6, scenario_7, scenario_8, scenario_9, scenario_10,
+            scenario_11,
         ):
             try:
                 scenario()

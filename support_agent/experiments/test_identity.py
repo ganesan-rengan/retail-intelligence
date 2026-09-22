@@ -1,4 +1,4 @@
-"""Six-scenario check of login() / resolve_session() against the real DB.
+"""Seven-scenario check of login() / resolve_session() against the real DB.
 
 Run from the repo root:  uv run python -m support_agent.experiments.test_identity
 
@@ -9,6 +9,8 @@ expires_at equals "now" is still valid, matching confirm_return (scenario 6
 of test_gate1.py). Real time always moves forward between an insert and the
 read, so equality can't be reached on the real clock; scenario 6 swaps in a
 frozen clock for identity.datetime to sit exactly on the boundary.
+Scenario 7 needs no database: it shows current_customer_id fails closed
+(reads None) in a thread that was not explicitly handed the context.
 
 This file deliberately does NOT import tools.py, which loads the embedding
 model at import time, and nothing here needs it. Customer 12346, the
@@ -21,6 +23,9 @@ tracked by token and deleted in a finally block. After cleanup the table is
 queried again and compared with its pre-test count and max session_id.
 """
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import datetime, timedelta
 from unittest import mock
 
@@ -29,7 +34,13 @@ from sqlalchemy import delete, func, select
 from shared.database import get_session
 from shared.models import Customer, CustomerSession
 from support_agent.src import identity as identity_module
-from support_agent.src.identity import SESSION_TTL_MINUTES, login, resolve_session
+from support_agent.src.identity import (
+    SESSION_TTL_MINUTES,
+    as_customer,
+    current_customer_id,
+    login,
+    resolve_session,
+)
 
 TEST_CUSTOMER_ID = 12346  # see docstring
 MISSING_CUSTOMER_ID = -1
@@ -174,6 +185,42 @@ def scenario_6() -> None:
             check("6", resolved == expected, f"{label}: resolved={resolved}")
 
 
+def scenario_7() -> None:
+    print("\n[7] current_customer_id fails closed in threads not handed the context")
+
+    def read() -> int | None:
+        return current_customer_id.get()
+
+    def read_in_plain_thread() -> int | None:
+        seen: list = []
+        worker = threading.Thread(target=lambda: seen.append(read()))
+        worker.start()
+        worker.join(timeout=10)
+        return seen[0]  # empty if the thread died: IndexError, recorded as a FAIL
+
+    check("7", read() is None, "baseline: nothing is set before the test")
+    with as_customer(TEST_CUSTOMER_ID):
+        check("7", read() == TEST_CUSTOMER_ID, "control: this thread sees the value it set")
+        check("7", read_in_plain_thread() is None,
+              "plain threading.Thread sees None, not this thread's value")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            check("7", pool.submit(read).result(timeout=10) is None,
+                  "ThreadPoolExecutor.submit worker sees None, not this thread's value")
+            handed = copy_context()  # taken while the value is set
+            check("7", pool.submit(handed.run, read).result(timeout=10) == TEST_CUSTOMER_ID,
+                  "control: the same worker CAN see it when handed copy_context().run")
+            check("7", pool.submit(read).result(timeout=10) is None,
+                  "and that worker keeps nothing afterwards: a plain submit is None again")
+    check("7", read() is None, "as_customer reset the value on normal exit")
+
+    try:
+        with as_customer(TEST_CUSTOMER_ID):
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+    check("7", read() is None, "as_customer reset the value even when the block raised")
+
+
 def main() -> int:
     baseline_count = count_rows(CustomerSession)
     baseline_max_id = max_session_id()
@@ -185,7 +232,9 @@ def main() -> int:
     print(f"customer {TEST_CUSTOMER_ID} exists")
 
     try:
-        for scenario in (scenario_1, scenario_2, scenario_3, scenario_4, scenario_5, scenario_6):
+        for scenario in (
+            scenario_1, scenario_2, scenario_3, scenario_4, scenario_5, scenario_6, scenario_7,
+        ):
             try:
                 scenario()
             except Exception as exc:

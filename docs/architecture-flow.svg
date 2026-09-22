@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1420" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <style>
+    .code { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
+    .lbl  { font-size: 11px; fill: #334155; }
+    .lbl-strong { font-size: 11px; fill: #7f1d1d; font-weight: 700; }
+    .box-title  { font-size: 13px; font-weight: 700; fill: #0f172a; }
+    .box-sub    { font-size: 11px; fill: #334155; }
+    .group-head { font-size: 12px; font-weight: 700; fill: #475569; letter-spacing: 0.3px; }
+  </style>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b91c1c"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#15803d"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="1420" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="600" y="30" text-anchor="middle" font-size="20" font-weight="700" fill="#0f172a">Support Agent — Request Flow (current implementation)</text>
+  <text x="600" y="50" text-anchor="middle" font-size="12" fill="#64748b">Conceptual architecture and enforcement boundaries — not a call graph</text>
+
+  <!-- Legend -->
+  <g>
+    <rect x="20" y="68" width="260" height="150" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+    <text x="32" y="85" font-size="11" font-weight="700" fill="#334155">Legend</text>
+
+    <line x1="32" y1="98" x2="60" y2="98" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+    <text x="66" y="102" class="lbl">request / call flow</text>
+
+    <line x1="32" y1="116" x2="60" y2="116" stroke="#334155" stroke-width="2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+    <text x="66" y="120" class="lbl">audit-log side effect (Gate 4)</text>
+
+    <line x1="32" y1="134" x2="60" y2="134" stroke="#15803d" stroke-width="2" stroke-dasharray="1,4" stroke-linecap="round" marker-end="url(#arrowGreen)"/>
+    <text x="66" y="138" class="lbl">response path back to user</text>
+
+    <rect x="32" y="146" width="28" height="14" rx="3" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
+    <text x="66" y="157" class="lbl">safety-gate enforcement point</text>
+
+    <rect x="32" y="166" width="28" height="14" rx="3" fill="#fef9c3" stroke="#ca8a04"/>
+    <text x="66" y="177" class="lbl">database table</text>
+
+    <rect x="32" y="186" width="28" height="14" rx="3" fill="#dcfce7" stroke="#16a34a"/>
+    <text x="66" y="197" class="lbl">customer-scoped tool</text>
+  </g>
+
+  <!-- User -->
+  <rect x="520" y="250" width="160" height="44" rx="22" fill="#e2e8f0" stroke="#64748b"/>
+  <text x="600" y="277" text-anchor="middle" class="box-title" font-size="13">User (terminal)</text>
+  <line x1="600" y1="294" x2="600" y2="318" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- CLI -->
+  <rect x="490" y="320" width="220" height="54" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="2"/>
+  <text x="600" y="341" text-anchor="middle" class="box-title code">CLI — chat.py</text>
+  <text x="600" y="357" text-anchor="middle" class="box-sub">do_login() + conversation loop</text>
+
+  <!-- login() branch -->
+  <line x1="710" y1="342" x2="815" y2="342" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="720" y="336" class="lbl code">login(customer_id)</text>
+
+  <rect x="820" y="320" width="220" height="50" rx="8" fill="#ede9fe" stroke="#7c3aed"/>
+  <text x="930" y="341" text-anchor="middle" class="box-title code" font-size="12">identity.login()</text>
+  <text x="930" y="357" text-anchor="middle" class="box-sub">verifies customer_id exists</text>
+
+  <line x1="930" y1="370" x2="930" y2="398" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="938" y="388" class="lbl">insert</text>
+
+  <rect x="820" y="400" width="220" height="54" rx="8" fill="#fef9c3" stroke="#ca8a04"/>
+  <text x="930" y="422" text-anchor="middle" class="box-title" font-size="12">customer_sessions</text>
+  <text x="930" y="438" text-anchor="middle" class="box-sub">session_token, 60-min TTL</text>
+
+  <line x1="815" y1="360" x2="712" y2="360" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="715" y="376" class="lbl">returns session_token, expires_at</text>
+
+  <!-- run_agent entry -->
+  <line x1="600" y1="374" x2="600" y2="428" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="480" y="430" width="240" height="54" rx="8" fill="#e0f2fe" stroke="#0284c7"/>
+  <text x="600" y="451" text-anchor="middle" class="box-title code" font-size="12">run_agent(message,</text>
+  <text x="600" y="467" text-anchor="middle" class="box-title code" font-size="12">session_token, messages)</text>
+
+  <!-- resolve_session diamond -->
+  <line x1="600" y1="484" x2="600" y2="513" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <polygon points="600,513 740,558 600,603 460,558" fill="#f1f5f9" stroke="#334155" stroke-width="2"/>
+  <text x="600" y="554" text-anchor="middle" class="box-sub code" font-size="11">resolve_session</text>
+  <text x="600" y="567" text-anchor="middle" class="box-sub code" font-size="11">(session_token)</text>
+
+  <!-- invalid/expired short-circuit -->
+  <line x1="460" y1="558" x2="385" y2="558" stroke="#b91c1c" stroke-width="2" marker-end="url(#arrowRed)"/>
+  <rect x="120" y="533" width="260" height="50" rx="8" fill="#fee2e2" stroke="#dc2626"/>
+  <text x="250" y="552" text-anchor="middle" class="box-sub" font-size="11" font-weight="700">invalid / expired session</text>
+  <text x="250" y="567" text-anchor="middle" class="box-sub" font-size="11">short-circuit — no model call, no tool dispatch</text>
+  <path d="M120,558 C 40,558 40,360 488,360" fill="none" stroke="#b91c1c" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#arrowRed)"/>
+  <text x="60" y="450" class="lbl-strong" transform="rotate(-90 60 450)" text-anchor="middle">back to CLI</text>
+
+  <!-- valid -> as_customer -->
+  <line x1="600" y1="603" x2="600" y2="628" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="608" y="618" class="lbl">valid</text>
+
+  <rect x="480" y="630" width="240" height="54" rx="8" fill="#e0f2fe" stroke="#0284c7"/>
+  <text x="600" y="651" text-anchor="middle" class="box-title code" font-size="12">as_customer(customer_id)</text>
+  <text x="600" y="667" text-anchor="middle" class="box-sub">sets current_customer_id ContextVar</text>
+
+  <!-- Gemini -->
+  <line x1="600" y1="684" x2="600" y2="708" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="490" y="710" width="220" height="50" rx="8" fill="#fef3c7" stroke="#d97706"/>
+  <text x="600" y="731" text-anchor="middle" class="box-title" font-size="12">Gemini (LLM)</text>
+  <text x="600" y="747" text-anchor="middle" class="box-sub">requests tool calls</text>
+
+  <!-- dispatch_with_gate -->
+  <line x1="600" y1="760" x2="600" y2="788" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="420" y="790" width="360" height="64" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="3"/>
+  <text x="600" y="813" text-anchor="middle" class="box-title code" font-size="13">dispatch_with_gate()</text>
+  <text x="600" y="830" text-anchor="middle" class="lbl-strong" font-size="11">GATE 1 (confirmation) + GATE 4 (audit logging)</text>
+  <text x="600" y="844" text-anchor="middle" class="lbl-strong" font-size="11">enforced here — regardless of what the model requests</text>
+
+  <!-- agent_actions (dashed, Gate 4) -->
+  <line x1="780" y1="820" x2="875" y2="820" stroke="#334155" stroke-width="2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+  <rect x="880" y="795" width="220" height="54" rx="8" fill="#fef9c3" stroke="#ca8a04"/>
+  <text x="990" y="817" text-anchor="middle" class="box-title" font-size="12">agent_actions</text>
+  <text x="990" y="833" text-anchor="middle" class="box-sub">every call, token masked</text>
+  <text x="785" y="810" class="lbl" font-size="10" font-style="italic">every dispatch —</text>
+  <text x="785" y="822" class="lbl" font-size="10" font-style="italic">success or refusal</text>
+
+  <!-- tool group fan-out -->
+  <line x1="480" y1="850" x2="310" y2="900" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="720" y1="850" x2="890" y2="900" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <text x="300" y="890" text-anchor="middle" class="group-head">Customer-scoped</text>
+  <text x="300" y="903" text-anchor="middle" class="lbl">(reads current_customer_id)</text>
+  <text x="900" y="890" text-anchor="middle" class="group-head">Unscoped / public</text>
+  <text x="900" y="903" text-anchor="middle" class="lbl">(no customer_id involved)</text>
+
+  <!-- left column: customer-scoped tools -->
+  <rect x="150" y="905" width="300" height="40" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="300" y="929" text-anchor="middle" class="box-title code" font-size="12">get_order_status_for_model</text>
+
+  <line x1="300" y1="945" x2="300" y2="953" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="150" y="955" width="300" height="40" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="300" y="979" text-anchor="middle" class="box-title code" font-size="12">propose_return_for_model</text>
+
+  <line x1="300" y1="995" x2="300" y2="1003" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="150" y="1005" width="300" height="40" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="300" y="1029" text-anchor="middle" class="box-title code" font-size="12">confirm_return_for_model</text>
+
+  <!-- right column: unscoped tools -->
+  <rect x="750" y="905" width="300" height="40" rx="6" fill="#f1f5f9" stroke="#64748b"/>
+  <text x="900" y="929" text-anchor="middle" class="box-title code" font-size="12">search_policy</text>
+
+  <line x1="900" y1="945" x2="900" y2="953" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="750" y="955" width="300" height="44" rx="6" fill="#fef9c3" stroke="#ca8a04"/>
+  <text x="900" y="973" text-anchor="middle" class="box-title" font-size="12">policy_chunks</text>
+  <text x="900" y="989" text-anchor="middle" class="box-sub">pgvector cosine (&lt;=&gt;), top-3</text>
+
+  <rect x="750" y="1009" width="300" height="40" rx="6" fill="#f1f5f9" stroke="#64748b"/>
+  <text x="900" y="1033" text-anchor="middle" class="box-title code" font-size="12">get_demand_forecast</text>
+
+  <line x1="900" y1="1049" x2="900" y2="1057" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="750" y="1059" width="300" height="44" rx="6" fill="#f1f5f9" stroke="#64748b"/>
+  <text x="900" y="1085" text-anchor="middle" class="box-sub" font-size="12">Forecasting API (external, Render)</text>
+
+  <!-- pending_returns -->
+  <line x1="300" y1="1045" x2="300" y2="1073" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="308" y="1063" class="lbl">token + 15-min TTL</text>
+  <rect x="150" y="1075" width="300" height="60" rx="8" fill="#fef9c3" stroke="#ca8a04"/>
+  <text x="300" y="1098" text-anchor="middle" class="box-title" font-size="12">pending_returns</text>
+  <text x="300" y="1113" text-anchor="middle" class="box-sub" font-size="10">secrets.token_urlsafe(32), 15-min TTL</text>
+  <text x="300" y="1127" text-anchor="middle" class="lbl-strong" font-size="10">ends here — no return yet</text>
+
+  <!-- SEPARATE CONVERSATION TURN divider -->
+  <line x1="40" y1="1175" x2="1160" y2="1175" stroke="#6b7280" stroke-width="2" stroke-dasharray="8,5"/>
+  <rect x="410" y="1163" width="380" height="24" fill="#ffffff"/>
+  <text x="600" y="1180" text-anchor="middle" font-size="13" font-weight="700" fill="#6b7280" letter-spacing="1px">SEPARATE CONVERSATION TURN</text>
+
+  <!-- confirm_return_for_model, next turn -->
+  <rect x="470" y="1220" width="260" height="50" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="600" y="1241" text-anchor="middle" class="box-title code" font-size="12">confirm_return_for_model</text>
+  <text x="600" y="1257" text-anchor="middle" class="box-sub" font-size="10">same tool — invoked in a new turn</text>
+
+  <path d="M470,1240 C 300,1240 260,1180 260,1137" fill="none" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+  <text x="130" y="1195" class="lbl" font-size="10">reads token, updates</text>
+  <text x="130" y="1207" class="lbl" font-size="10">status → confirmed</text>
+
+  <line x1="600" y1="1270" x2="470" y2="1328" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="475" y="1305" class="lbl-strong" font-size="11">GATE 3 — idempotency</text>
+  <text x="475" y="1317" class="lbl-strong" font-size="11">enforced here (UNIQUE constraint)</text>
+
+  <rect x="340" y="1330" width="260" height="60" rx="8" fill="#fef9c3" stroke="#ca8a04" stroke-width="2"/>
+  <text x="470" y="1353" text-anchor="middle" class="box-title" font-size="12">returns</text>
+  <text x="470" y="1369" text-anchor="middle" class="box-sub" font-size="10">idempotency_key = token</text>
+  <text x="470" y="1382" text-anchor="middle" class="box-sub" font-size="10">(UNIQUE constraint)</text>
+
+  <!-- response path -->
+  <path d="M418,822 C 380,822 380,730 488,735" fill="none" stroke="#15803d" stroke-width="2" stroke-dasharray="1,4" stroke-linecap="round" marker-end="url(#arrowGreen)"/>
+  <path d="M488,375 L 430,375 L 430,300 L 488,300" fill="none" stroke="#15803d" stroke-width="2" stroke-dasharray="1,4" stroke-linecap="round" marker-end="url(#arrowGreen)" transform="translate(0,-1)"/>
+  <text x="330" y="565" fill="#15803d" font-size="10" font-style="italic" text-anchor="middle" transform="rotate(-90 330 565)">tool result → model loop continues until final answer</text>
+  <text x="405" y="340" fill="#15803d" font-size="10" font-style="italic" text-anchor="middle" transform="rotate(-90 405 340)">(answer, messages) → CLI prints "Agent: ..."</text>
+
+  <!-- footer -->
+  <text x="600" y="1408" text-anchor="middle" font-size="10" fill="#94a3b8">Generated from the implementation in support_agent/ — reflects current code only, not planned work</text>
+</svg>

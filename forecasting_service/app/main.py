@@ -11,7 +11,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -129,12 +129,7 @@ def products() -> ProductsResponse:
     return ProductsResponse(products=trained, count=len(trained))
 
 
-@app.get("/")
-def root() -> dict:
-    """Signpost for anyone who lands on the base URL."""
-    return {
-        "service": "Demand Forecasting Service",
-        "docs": "/docs",
-        "health": "/health",
-    }    
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    return RedirectResponse("/docs")
 

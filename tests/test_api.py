@@ -142,7 +142,7 @@ class TestProducts:
 
 
 class TestRoot:
-    def test_returns_200(self, api_client):
-        resp = api_client.get("/")
-        assert resp.status_code == 200
-        assert resp.json()["health"] == "/health"
+    def test_redirects_to_docs(self, api_client):
+        resp = api_client.get("/", follow_redirects=False)
+        assert resp.status_code == 307
+        assert resp.headers["location"] == "/docs"
